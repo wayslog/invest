@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wayslog-invest"
+version = "0.1.0"
+description = "A personal research framework for US equity investing."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=2.0,<3",
+    "pandas>=2.2,<4",
+]
+
+[project.scripts]
+invest = "invest.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15,<2",
+    "pandas-stubs>=2.2,<4",
+    "pytest>=8.3,<10",
+    "pytest-cov>=7,<8",
+    "ruff>=0.11,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/invest"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/examples",
+    "/docs",
+    "/pyproject.toml",
+    "/README.md",
+    "/Makefile",
+    "/uv.lock",
+    "/.python-version",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-config", "--strict-markers", "--import-mode=importlib"]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["invest"]
+patch = ["subprocess"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]

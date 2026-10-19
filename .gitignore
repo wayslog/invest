@@ -1,0 +1,29 @@
+# Python and local tools
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.uv-cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+
+# Local credentials and research outputs
+.env
+.env.*
+!.env.example
+data/*
+!data/README.md
+reports/*
+!reports/README.md
+.ipynb_checkpoints/
+*.log
+.DS_Store
+.idea/
+.vscode/
