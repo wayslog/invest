@@ -1,0 +1,10 @@
+# Research defaults for synthetic data; not approved live-trading parameters.
+symbol = "DEMO"
+initial_cash = "5000.00"
+lookback = 5
+allocation = "0.8"
+commission = "1.00"
+slippage_bps = "5"
+stop_loss = "0.08"
+trailing_stop = "0.12"
+account_drawdown = "0.15"
