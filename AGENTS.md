@@ -10,6 +10,14 @@
 - Put reusable logic in `src/invest/`. Add behavioral tests for new calculations
   and data validation. State units, date conventions and adjustment assumptions.
 - Keep `pyproject.toml` and `uv.lock` consistent when changing dependencies.
+- Market data, ledgers and result tables use typed Parquet with Zstandard compression.
+  Configuration is TOML; do not add text-table data paths.
+- Paper fills must follow the decision session. Preserve Decimal accounting,
+  append-only history and restart idempotency. Keep synthetic and real data explicit.
+- Account snapshots are tied to engine source and parameters. After changing engine
+  code, use a new demo directory: `make demo DEMO_ACCOUNT=reports/<new-name>`.
+- In cloud sessions, set `MPLCONFIGDIR=/workspace/.cache/invest-matplotlib` if needed
+  for Matplotlib's writable font cache.
 - Keep credentials, downloaded datasets and private reports out of Git. Use the
   ignored `data/` and `reports/` directories for generated research artifacts.
 - README and research documentation are written in Chinese; code identifiers are

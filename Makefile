@@ -1,4 +1,5 @@
 UV ?= uv
+DEMO_ACCOUNT ?= reports/paper-demo
 
 .PHONY: install check lint typecheck test format build demo
 
@@ -25,4 +26,5 @@ build:
 	$(UV) build
 
 demo:
-	$(UV) run --locked invest analyze examples/prices.csv
+	$(UV) run --locked invest analyze examples/prices.parquet
+	$(UV) run --locked invest paper --data examples/paper_bars.parquet --config configs/demo.toml --account $(DEMO_ACCOUNT)

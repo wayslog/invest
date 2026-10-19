@@ -4,13 +4,16 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wayslog-invest"
-version = "0.1.0"
+version = "0.2.0"
 description = "A personal research framework for US equity investing."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "filelock>=3.17,<4",
+    "matplotlib>=3.9,<4",
     "numpy>=2.0,<3",
     "pandas>=2.2,<4",
+    "pyarrow>=19,<25",
 ]
 
 [project.scripts]
@@ -34,6 +37,7 @@ include = [
     "/tests",
     "/examples",
     "/docs",
+    "/configs",
     "/pyproject.toml",
     "/README.md",
     "/Makefile",
@@ -64,4 +68,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+untyped_calls_exclude = ["pyarrow"]
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true

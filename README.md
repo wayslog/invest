@@ -1,75 +1,104 @@
 # invest
 
-个人美股投资研究框架，使用 **Python 3.12 + uv**。
-当前提供可复现的开发环境、CSV 数据校验、单资产区间收益/最大回撤计算和命令行入口。
+个人美股投资研究框架，使用 **Python 3.12 + uv + Parquet**。
+当前提供单标的日线 paper 账户：均线信号、次日模拟成交、资金核算、风险退出、
+买入持有基准，以及可持久化的账本与图表报告。运行无需券商账户或密钥。
+
+项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
+当前已完成工程原型，下一阶段优先接入真实数据并核对单标的账户行为。
 
 ## 快速开始
 
-先安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)；本项目验证版本为
-`0.12.23`。在仓库根目录运行：
+安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)（验证版本 `0.12.23`），
+在仓库根目录运行：
 
 ```bash
 uv sync --locked --python 3.12
-uv run --locked invest analyze examples/prices.csv
+make demo
 ```
 
-`uv` 会使用 Python 3.12 创建本地 `.venv/`，安装项目和开发依赖。
-不需要手动激活环境；IDE 选择 `.venv/bin/python`（Windows 为 `.venv/Scripts/python.exe`）。
-云环境已经提供 Python 3.12 和 uv；如其缓存目录不可写，可先设置
-`export UV_CACHE_DIR=/workspace/.cache/uv-invest`。
-
-`examples/prices.csv` 是人工构造的演示数据，不代表任何股票的实际行情。
-输出包含 5 个观测点、区间收益约 `0.03`（3%）、最大回撤约 `-0.029412`（-2.94%）。
-也可以使用 `uv run --locked python -m invest analyze examples/prices.csv`。
-
-## 数据约定
-
-每个 CSV 代表一个资产的日线价格，至少两行，必需列为：
-
-```csv
-date,adjusted_close
-2024-01-02,100.00
-2024-01-03,102.00
-```
-
-日期必须是唯一、递增的 `YYYY-MM-DD`；价格必须是有限正数。缺失交易日不会自动补齐。
-区间收益 = 末值 / 初值 − 1；最大回撤 = 各观测点价格相对历史峰值跌幅的最小值。
-输出是比例，不是百分数；回撤为负数或零。输入价格的复权口径由数据提供者负责。
-当前功能无需密钥、数据库或外部服务。
-
-## 开发
+云环境如默认缓存目录不可写，先运行：
 
 ```bash
-make install     # 根据 uv.lock 安装依赖
-make check       # Ruff 检查和格式校验、mypy、pytest（含覆盖率）
-make demo        # 离线示例
-make build       # 构建 wheel 和源码包到 dist/
+export UV_CACHE_DIR=/workspace/.cache/uv-invest
+export MPLCONFIGDIR=/workspace/.cache/invest-matplotlib
 ```
 
-不使用 Make 时，可运行对应命令：
+`make demo` 使用明确标记为 `synthetic` 的人工数据，不代表真实股票或策略效果。
+示例 Parquet 随仓库提供，可用 `uv run --locked python examples/generate.py` 重新生成。
+
+也可以直接运行：
 
 ```bash
-uv run --locked ruff check .
-uv run --locked ruff format --check .
-uv run --locked mypy
-uv run --locked pytest --cov=invest --cov-report=term-missing
-uv build
+uv run --locked invest analyze examples/prices.parquet
+uv run --locked invest paper \
+  --data examples/paper_bars.parquet \
+  --config configs/demo.toml \
+  --account reports/paper-demo
 ```
 
-修改依赖使用 `uv add <package>` / `uv add --dev <package>`；升级时运行
-`uv lock --upgrade` 并验证完整检查。依赖声明和 `uv.lock` 一起提交，日常安装使用
-`--locked`，避免无意更新锁文件。推送和 Pull Request 会触发相同的 GitHub Actions 检查。
+命令返回本次快照目录。打开目录内的 `report.html` 查看净值、回撤和基准比较。
+同样输入再次运行返回 `updated: false`，不新增成交或快照。
+开发中修改引擎后，应使用新的账户目录，例如 `make demo DEMO_ACCOUNT=reports/paper-v2`。
 
-## 目录
+## 自有 paper 账户
+
+首版是一套离线日线撮合和账户账本，可以回放历史，也可以在日线收齐后逐日追加更新。
+更新时输入截至当日的**完整累计历史**；系统校验已处理部分没有变化，再重放计算并保存
+新的完整快照。首版以正确性优先，没有引入单独的增量会计实现。
+
+- 单账户单标的、美元、整股、多头与现金；当前不支持多标的组合、空头或杠杆。
+- 收盘生成订单，后续交易日开盘模拟成交，计入固定每单费用和双向滑点。
+- 现金不足会缩减买单；无成交量时保留待成交订单，不凭空成交。
+- 分红先计应收，在支付日才成为现金；支持整数倍正向拆股。
+- 趋势退出、单仓止损、单仓利润回撤、账户高点回撤，以及本金警戒/终止。
+- 账户状态和待成交订单跨运行保留；停用后不会因重启或价格反弹自行恢复。
+- 基准使用相同预热期、仓位上限、成交费用和企业行动，随后持续持有。
+
+这些是日线模拟假设，不代表真实成交。没有实时行情采集、交易日完整性验证、订单簿、
+税费或券商订单状态处理，不能把模拟数据直接解释为实盘收益。
+
+Alpaca 暂不作为依赖。下一步先接入经过校验的真实日线数据，再做前向 paper 观察；
+需要验证外部订单提交、撤单、部分成交和核对时，再增加券商 paper 适配器。
+
+## 数据、参数和输出
+
+- 数据格式及复权/分红口径：[Parquet 数据约定](docs/data.md)。
+- 账户状态、默认研究参数、限制及验收范围：[Paper 账户说明](docs/paper.md)。
+- 模块划分及后续方向：[架构说明](docs/architecture.md)。
+- `configs/demo.toml` 中的参数是工程演示默认值，尚未经过有效性验证。
 
 ```text
-src/invest/    可安装的 Python 包与命令行
-tests/        数据边界、计算结果及命令行集成测试
-examples/     可提交的离线示例数据
-data/         本地数据（默认忽略）
-reports/      分析输出（默认忽略）
-notebooks/    探索性研究说明
-docs/         架构与研究约定
+reports/paper-demo/
+├── CURRENT                    最新完整快照的编号
+└── runs/<编号>/
+    ├── bars.parquet           本次使用的全部行情
+    ├── config.parquet         实际参数快照
+    ├── manifest.parquet       引擎、输入文件校验值及版本
+    ├── equity.parquet         每日现金、持仓、应收、净值、状态、待成交订单
+    ├── trades.parquet         成交及决策日期、数量、价格、费用和原因
+    ├── events.parquet         分红、拆股、拒单及风险事件
+    ├── benchmark_trades.parquet
+    ├── metrics.parquet        汇总指标
+    ├── equity.png             净值和回撤图
+    └── report.html            报告
 ```
 
-后续模块划分与统计口径见 [架构说明](docs/architecture.md)。
+所有行情、账户和统计表均为 Parquet（Zstandard 压缩）。TOML 用于人工编辑参数；
+`CURRENT` 只是原子切换快照的文本指针。报告和图像用于展示，不是数据存储格式。
+
+## 开发与验证
+
+```bash
+make install     # 依据 uv.lock 安装
+make check       # Ruff、格式校验、严格 mypy、pytest 和覆盖率
+make demo        # Parquet 分析及 paper 账户
+make build       # wheel 与源码包
+```
+
+`uv run` 自动使用 `.venv/`。修改依赖使用 `uv add` / `uv add --dev`，并一起提交
+`pyproject.toml` 和 `uv.lock`。CI 运行相同检查，不依赖外部行情或凭据。
+测试覆盖决策与成交时序、账目守恒、跳空、成本、风险退出、分红拆股、重启幂等及写入失败。
+
+本地行情放在 `data/`，账户及研究输出放在 `reports/`，均默认忽略；公开合成样例放在
+`examples/`。笔记本只用于探索，可复用逻辑放在 `src/invest/`。
