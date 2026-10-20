@@ -104,6 +104,12 @@ def render_study(directory: Path) -> None:
         if manifest["m3_research_eligible"]
         else "未通过进入 M3 的研究门槛"
     )
+    exposure_note = (
+        "<p><b>本研究登记为已知历史。所有区间（包括名为 holdout 的计算阶段）均为探索，"
+        "不能作为新的独立留出，也不授予正式策略资格。</b></p>"
+        if manifest["scope"] == "known_history_research_only"
+        else ""
+    )
     body = (
         '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -116,6 +122,7 @@ def render_study(directory: Path) -> None:
         "</style><h1>M2 多标的投资研究</h1>"
         f"<p>研究：{escape(manifest['study_id'])}；范围：{escape(manifest['scope'])}。"
         f"按验证净收益选出 <b>{escape(selected)}</b>。<b>{eligibility}</b>。</p>"
+        f"{exposure_note}"
         f"<p>所有账户独立从登记本金 {initial} 美元起步。train/validation/reused 是已知历史；"
         "holdout 在保存选择后才计算。walk 每折仅用上一年选参，不能拼接成连续实盘收益。"
         "成本压力同时倍增佣金和滑点；gap 是验证期每笔成交买入 +5%、卖出 −5% 的价格压力，"

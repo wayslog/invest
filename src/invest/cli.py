@@ -45,6 +45,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     fetch.add_argument("--end", type=date.fromisoformat, required=True)
     fetch.add_argument("--feed", choices=["sip", "iex"], required=True)
     fetch.add_argument(
+        "--actions-through",
+        type=date.fromisoformat,
+        help="Corporate-action process-date cutoff; default today + 120 days",
+    )
+    fetch.add_argument(
         "--output", type=Path, required=True, help="Parent directory for new batches"
     )
     verify = commands.add_parser("verify-data", help="Verify and reproduce a saved dataset offline")
@@ -62,6 +67,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     registration = commands.add_parser("research-register", help="Freeze a research design")
     registration.add_argument("--config", type=Path, required=True)
     registration.add_argument("--output", type=Path, required=True)
+    registration.add_argument(
+        "--known-history",
+        action="store_true",
+        help="Freeze prior exposure; results cannot qualify for formal forward observation",
+    )
     research = commands.add_parser("research", help="Run a registered portfolio study offline")
     research.add_argument("--registration", type=Path, required=True)
     research.add_argument(
@@ -75,16 +85,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     study_verify = commands.add_parser("verify-study", help="Verify and replay a saved study")
     study_verify.add_argument("--study", type=Path, required=True)
     study_verify.add_argument("--hashes-only", action="store_true")
+    from invest.forward_cli import add_forward_commands
+
+    add_forward_commands(commands)
     args = parser.parse_args(argv)
     exit_code = 0
 
     try:
-        if args.command == "analyze":
+        if args.command.startswith("forward-"):
+            from invest.forward_cli import dispatch_forward
+
+            output = dispatch_forward(args)
+            if output.get("error") or (
+                args.command in {"forward-run", "forward-job"} and output.get("status") == "paused"
+            ):
+                exit_code = 1
+        elif args.command == "analyze":
             output = asdict(analyze_prices(args.parquet))
         elif args.command == "research-register":
             from invest.research_registry import register_study
 
-            register_study(args.config, args.output)
+            register_study(args.config, args.output, known_history=args.known_history)
             output = {"registration": str(args.output)}
         elif args.command == "research":
             from invest.research import run_study
@@ -140,9 +161,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             from invest.alpaca import FetchSpec
             from invest.datasets import fetch_dataset
 
-            dataset_location = fetch_dataset(
-                FetchSpec(args.symbol, args.start, args.end, args.feed), args.output
-            )
+            spec = FetchSpec(args.symbol, args.start, args.end, args.feed)
+            if args.actions_through is not None:
+                spec = FetchSpec(args.symbol, args.start, args.end, args.feed, args.actions_through)
+            dataset_location = fetch_dataset(spec, args.output)
             status = pq.read_table(dataset_location / "manifest.parquet")["status"][0].as_py()
             findings = pq.read_table(dataset_location / "quality.parquet").to_pylist()
             output = {

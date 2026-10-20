@@ -8,9 +8,15 @@
 项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
 M0 工程原型已通过验收，见 [M0 验收记录](docs/milestones/m0.md)。
 M1 已完成：SPY 真实历史数据、质量准入、发行方分红核对和账户回放通过本地验收，
-见 [M1 验收记录](docs/milestones/m1.md)。当前版本 **`0.4.1`**，M2 已完成，
+见 [M1 验收记录](docs/milestones/m1.md)。当前版本 **`0.5.2`**，M2 已完成，
 见 [M2 验收记录](docs/milestones/m2.md)。首轮选定候选的留出收益为 -1.20%，
 未通过 M3 研究门槛；工程完成不表示策略可投入运行。
+M3 持续账户、原子事件日志、每日任务及恢复演练已实现；正式策略观察仍待候选资格，
+见 [M3 运行说明](docs/forward.md) 和 [阶段记录](docs/milestones/m3.md)。
+SPY 待支付分红的采集范围已修复，真实现金观察账户已登记；新一轮长窗口探索仍未取得
+策略资格，失败结果见 [R1 记录](docs/research/r1-long-horizon-results.md)。
+0.5.2 修复初始化引擎绑定、跨开盘失败处理和并发旧任务覆盖。已有现金账户保持冻结的
+0.5.1 引擎与完整记录；新版不直接接续该账户，迁移尚未实现。
 
 ## 快速开始
 
@@ -44,7 +50,18 @@ uv run --locked invest paper \
 
 命令返回本次快照目录。打开目录内的 `report.html` 查看净值、回撤和基准比较。
 同样输入再次运行返回 `updated: false`，不新增成交或快照。
-开发中修改引擎后，应使用新的账户目录，例如 `make demo DEMO_ACCOUNT=reports/paper-v2`。
+开发中修改引擎后，M1 合成演示使用新的目录，例如 `make demo DEMO_ACCOUNT=reports/paper-v2`。
+M3 持续资金账户必须保留身份和风险历史，不能按此方式清零后接续。
+
+## M3 持续账户与故障演练
+
+```bash
+make forward-demo
+```
+
+离线演练提前落盘的订单、延迟成交核算、重复任务、漏跑、暂停、风险锁和备份恢复。
+真实数据可用于现金运行观察；正式策略模式强制检查 M2 研究资格。
+逐日操作、调度器命令、报告和恢复限制见 [运行说明](docs/forward.md)。
 
 ## M2 多 ETF 研究
 
@@ -114,7 +131,8 @@ uv run --locked invest paper --dataset "$m1_dataset" \
 该交易日的次日纽约时间 00:15；交易所收盘本身不代表供应方整日日线已完整。
 这仍不保证发布时间或修订终结，历史回放不加此选项。
 新批次保留旧数据；若发现历史价格或企业行动修订，旧账户拒绝接续，应另开研究目录对照。
-资金账户跨策略版本连续运行、真实前向决策记录和券商 paper 属于后续阶段。
+M3 使用独立的 `forward-*` 命令记录真实接收/决策时间；引擎冻结，升级迁移仍需另行验收。
+券商 paper 属于后续阶段。
 
 ## 数据、参数和输出
 
@@ -156,6 +174,7 @@ make install     # 依据 uv.lock 安装
 make check       # Ruff、格式校验、严格 mypy、pytest 和覆盖率
 make demo        # Parquet 分析及 paper 账户
 make research-demo # 多标的离线研究及完整复现
+make forward-demo # 持续账户与合成故障演练
 make build       # wheel 与源码包
 ```
 

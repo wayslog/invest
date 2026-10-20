@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from typing import Any
@@ -6,7 +6,13 @@ from urllib.error import HTTPError
 
 import pytest
 
-from invest.alpaca import FetchSpec, NoRedirect, authenticated_request, decimal_value
+from invest.alpaca import (
+    ACTION_LOOKAHEAD_DAYS,
+    FetchSpec,
+    NoRedirect,
+    authenticated_request,
+    decimal_value,
+)
 from invest.quality import latest_completed_session
 
 
@@ -58,6 +64,14 @@ def test_feed_and_range_must_be_explicit() -> None:
         FetchSpec("SPY", date(2024, 1, 2), date(2024, 1, 3), "default")
     with pytest.raises(ValueError, match="start"):
         FetchSpec("SPY", date(2024, 1, 3), date(2024, 1, 2), "sip")
+
+
+def test_action_horizon_covers_announced_future_processing_dates() -> None:
+    now = datetime.now(UTC).date()
+    spec = FetchSpec("SPY", now - timedelta(days=20), now - timedelta(days=1), "sip")
+    assert spec.actions_through == now + timedelta(days=ACTION_LOOKAHEAD_DAYS)
+    with pytest.raises(ValueError, match="within one year"):
+        FetchSpec("SPY", spec.start, spec.end, "sip", now + timedelta(days=367))
 
 
 def test_freshness_cutoff_respects_half_day_and_weekend() -> None:

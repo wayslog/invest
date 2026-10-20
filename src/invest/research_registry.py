@@ -21,9 +21,13 @@ LEGACY_REGISTRATION_SCHEMA = pa.schema(
     ],
     metadata={b"schema_version": b"invest.research_registration.v1"},
 )
-REGISTRATION_SCHEMA = pa.schema(
+V2_REGISTRATION_SCHEMA = pa.schema(
     [*list(LEGACY_REGISTRATION_SCHEMA), ("engine_sha256", pa.string())],
     metadata={b"schema_version": b"invest.research_registration.v2"},
+)
+REGISTRATION_SCHEMA = pa.schema(
+    [*list(V2_REGISTRATION_SCHEMA), ("known_history", pa.bool_())],
+    metadata={b"schema_version": b"invest.research_registration.v3"},
 )
 
 
@@ -33,7 +37,7 @@ def write_table(table: pa.Table, path: Path) -> None:
         pq.write_table(table, stream, compression="zstd")
 
 
-def register_study(config_path: Path, output: Path) -> None:
+def register_study(config_path: Path, output: Path, *, known_history: bool = False) -> None:
     body = config_path.read_bytes()
     config = parse_study(body)
     write_table(
@@ -45,6 +49,7 @@ def register_study(config_path: Path, output: Path) -> None:
                     "config_sha256": hashlib.sha256(body).hexdigest(),
                     "config_body": body,
                     "engine_sha256": engine_digest(),
+                    "known_history": known_history,
                 }
             ],
             schema=REGISTRATION_SCHEMA,
@@ -58,8 +63,9 @@ def read_registration(
 ) -> tuple[StudyConfig, datetime, str]:
     table = pq.read_table(pa.BufferReader(source) if isinstance(source, bytes) else source)
     legacy = table.schema.equals(LEGACY_REGISTRATION_SCHEMA, check_metadata=True)
+    v2 = table.schema.equals(V2_REGISTRATION_SCHEMA, check_metadata=True)
     if (
-        not legacy and not table.schema.equals(REGISTRATION_SCHEMA, check_metadata=True)
+        not legacy and not v2 and not table.schema.equals(REGISTRATION_SCHEMA, check_metadata=True)
     ) or table.num_rows != 1:
         raise ValueError("Invalid research registration schema")
     row = table.to_pylist()[0]
@@ -86,6 +92,14 @@ def read_registration(
     ):
         raise ValueError("Research registration identity/hash/time mismatch")
     return config, row["registered_at"], row["config_sha256"]
+
+
+def registration_known_history(source: bytes) -> bool:
+    """The exposure declaration is frozen with the configuration, never a run override."""
+    table = pq.read_table(pa.BufferReader(source))
+    return (
+        bool(table["known_history"][0].as_py()) if "known_history" in table.column_names else False
+    )
 
 
 def parse_mappings(values: list[str]) -> dict[str, Path]:

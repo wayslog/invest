@@ -15,7 +15,10 @@
 - Paper fills must follow the decision session. Preserve Decimal accounting,
   append-only history and restart idempotency. Keep synthetic and real data explicit.
 - Account snapshots are tied to engine source and parameters. After changing engine
-  code, use a new demo directory: `make demo DEMO_ACCOUNT=reports/<new-name>`.
+  code, use a new M1 demo directory: `make demo DEMO_ACCOUNT=reports/<new-name>`.
+  M3 forward capital accounts keep their identity and risk history; never replace
+  them with fresh capital to bypass a frozen engine or a paused/risk-halted state.
+  Run `make forward-demo M3_DEMO_DIR=reports/<new-name>` for forward-engine changes.
 - In cloud sessions, set `MPLCONFIGDIR=/workspace/.cache/invest-matplotlib` if needed
   for Matplotlib's writable font cache.
 - Keep credentials, downloaded datasets and private reports out of Git. Use the

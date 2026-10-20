@@ -18,7 +18,13 @@ from invest.evaluation import METRIC_SCHEMA, evaluate, yearly
 from invest.market import read_bars
 from invest.portfolio import PortfolioResult, simulate_portfolio
 from invest.portfolio_audit import audit_portfolio
-from invest.research_registry import read_registration, seal, verify_inventory, write_table
+from invest.research_registry import (
+    read_registration,
+    registration_known_history,
+    seal,
+    verify_inventory,
+    write_table,
+)
 from invest.storage import engine_digest
 from invest.strategies import Candidate, candidates
 from invest.study_config import StudyConfig
@@ -223,6 +229,7 @@ def run_study(
     digest = engine_digest()
     registration_body = registration.read_bytes()
     config, registered, config_hash = read_registration(registration_body, required_engine=digest)
+    known_history = registration_known_history(registration_body)
     if output.exists():
         raise ValueError("Research output already exists; use a new immutable run directory")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -347,9 +354,28 @@ def run_study(
         comparison = pa.Table.from_pylist(comparisons, schema=COMPARISON_SCHEMA)
         write_table(comparison, staging / "comparison.parquet")
         gates = eligibility(comparisons, selected, config, synthetic, admission, registered)
+        if known_history:
+            gates = pa.concat_tables(
+                [
+                    gates,
+                    pa.Table.from_pylist(
+                        [
+                            {
+                                "check": "independent_evidence",
+                                "passed": False,
+                                "detail": "Registered as known history; fresh downloads "
+                                "do not create unseen evidence",
+                            }
+                        ],
+                        schema=GATE_SCHEMA,
+                    ),
+                ]
+            )
         write_table(gates, staging / "eligibility.parquet")
         eligible = all(gates["passed"].to_pylist())
         scope = "synthetic_engineering_only" if synthetic else "historical_research_only"
+        if known_history and not synthetic:
+            scope = "known_history_research_only"
         if engine_digest() != digest:
             raise ValueError("Engine changed during the experiment; discard mixed-version results")
         write_table(

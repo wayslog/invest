@@ -1,0 +1,9 @@
+name = "m3-cash-operations-v1"
+mode = "cash_observation"
+symbols = ["SPY", "XLF"]
+candidate = "cash"
+# 在实际登记前改为下一 XNYS 交易日；开始后不得改写登记。
+start_session = 2026-10-20
+sessions = 60
+minimum_fills = 0
+max_capture_age_minutes = 120

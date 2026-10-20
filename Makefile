@@ -1,8 +1,9 @@
 UV ?= uv
 DEMO_ACCOUNT ?= reports/paper-demo
 M2_DEMO_DIR ?= reports/m2-demo
+M3_DEMO_DIR ?= reports/m3-demo
 
-.PHONY: install check lint typecheck test format build demo research-demo
+.PHONY: install check lint typecheck test format build demo research-demo forward-demo
 
 install:
 	$(UV) sync --locked --python 3.12
@@ -35,3 +36,6 @@ research-demo:
 	$(UV) run --locked invest research-register --config configs/m2.toml --output $(M2_DEMO_DIR)/registration.parquet
 	$(UV) run --locked invest research --registration $(M2_DEMO_DIR)/registration.parquet --synthetic --input SPY=$(M2_DEMO_DIR)/inputs/SPY.parquet --input XLF=$(M2_DEMO_DIR)/inputs/XLF.parquet --input XLK=$(M2_DEMO_DIR)/inputs/XLK.parquet --output $(M2_DEMO_DIR)/study
 	$(UV) run --locked invest verify-study --study $(M2_DEMO_DIR)/study
+
+forward-demo:
+	$(UV) run --locked python examples/forward_drill.py --output $(M3_DEMO_DIR)

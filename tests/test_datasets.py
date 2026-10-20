@@ -2,7 +2,7 @@ import hashlib
 import json
 from collections.abc import Iterator
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -386,6 +386,66 @@ def test_capture_cutoff_is_preserved_in_manifest(tmp_path: Path) -> None:
         pq.read_table(directory / "manifest.parquet")["actions_through"][0].as_py()
         == spec.actions_through
     )
+
+
+def test_unpaid_dividend_uses_future_process_query_but_current_availability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_at = datetime(2024, 1, 10, 6, tzinfo=UTC)
+
+    class CaptureClock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> "CaptureClock":
+            return cls.fromtimestamp(captured_at.timestamp(), tz)
+
+    monkeypatch.setattr("invest.alpaca.datetime", CaptureClock)
+    spec = FetchSpec(SPEC.symbol, SPEC.start, SPEC.end, SPEC.feed)
+    original = provider()
+    process_date = date(2024, 1, 31)
+
+    def get(endpoint: str, query: dict[str, str]) -> bytes:
+        if endpoint != "/v1/corporate-actions":
+            return original(endpoint, query)
+        actions = []
+        if date.fromisoformat(query["end"]) >= process_date:
+            actions = [
+                {
+                    "symbol": "DEMO",
+                    "ex_date": "2024-01-05",
+                    "rate": "1",
+                    "process_date": str(process_date),
+                    "payable_date": str(process_date),
+                    "foreign": False,
+                    "special": False,
+                },
+                {
+                    "symbol": "DEMO",
+                    "ex_date": "2024-02-15",
+                    "rate": "2",
+                    "process_date": "2024-03-01",
+                    "payable_date": "2024-03-01",
+                    "foreign": False,
+                    "special": False,
+                },
+            ]
+        return json.dumps(
+            {"corporate_actions": {"cash_dividends": actions}, "next_page_token": None}
+        ).encode()
+
+    old = fetch_dataset(replace(spec, actions_through=captured_at.date()), tmp_path, get)
+    assert not any(verify_dataset(old)["dividend"].to_pylist())
+    fixed = fetch_dataset(spec, tmp_path, get)
+    bars = verify_dataset(fixed)
+    assert bars["dividend"].to_pylist() == [0, 0, 0, 1, 0, 0]
+    assert bars["dividend_pay_date"].to_pylist()[3] == process_date
+    assert set(pq.read_table(fixed / "availability.parquet")["observed_at"].to_pylist()) == {
+        captured_at
+    }
+    assert pq.read_table(fixed / "actions.parquet").num_rows == 1
+    result = update_paper(fixed / "bars.parquet", tmp_path / "paper", BASE, dataset=fixed)
+    last = pq.read_table(result.directory / "equity.parquet").to_pylist()[-1]
+    assert last["receivables"] > 0  # Still unpaid: future payment is never early cash.
 
 
 def test_late_action_response_cannot_admit_premature_bar_pages(

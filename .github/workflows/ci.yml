@@ -22,4 +22,5 @@ jobs:
       - run: make install
       - run: make check
       - run: make demo
+      - run: make forward-demo
       - run: make build

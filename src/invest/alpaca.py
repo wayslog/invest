@@ -20,6 +20,7 @@ from invest.market import BAR_SCHEMA, MONEY, validate_bars
 from invest.quality import parse_as_of
 
 NEW_YORK = ZoneInfo("America/New_York")
+ACTION_LOOKAHEAD_DAYS = 120
 RequestData = Callable[[str, dict[str, str]], bytes]
 RAW_SCHEMA = pa.schema(
     [
@@ -59,7 +60,9 @@ class FetchSpec:
     start: date
     end: date
     feed: str
-    actions_through: date = field(default_factory=lambda: datetime.now(UTC).date())
+    actions_through: date = field(
+        default_factory=lambda: datetime.now(UTC).date() + timedelta(days=ACTION_LOOKAHEAD_DAYS)
+    )
 
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,15}", self.symbol):
@@ -68,8 +71,8 @@ class FetchSpec:
             raise ValueError("start must be on or before end")
         if self.feed not in {"sip", "iex"}:
             raise ValueError("feed must explicitly be sip or iex")
-        if not self.end <= self.actions_through <= datetime.now(UTC).date():
-            raise ValueError("Action capture cutoff must cover end and cannot be in the future")
+        if not self.end <= self.actions_through <= datetime.now(UTC).date() + timedelta(days=366):
+            raise ValueError("Action process-date cutoff must cover end and be within one year")
 
     def queries(self) -> list[tuple[str, str, dict[str, str]]]:
         # Alpaca timestamps represent midnight in New York; end includes the requested day.
@@ -97,7 +100,10 @@ class FetchSpec:
                 {
                     "symbols": self.symbol,
                     # This endpoint filters on process_date, not ex_date. Capture
-                    # all available processed history, then select ex-dates locally.
+                    # announced processing dates too: an already ex-dividend cash
+                    # distribution may have a future process/payment date. This is
+                    # still an observation NOW, not a future availability timestamp.
+                    # Select ex-dates within the requested bar range locally.
                     # The explicit cutoff is persisted for reproducible verification.
                     "start": "1970-01-01",
                     "end": self.actions_through.isoformat(),
