@@ -1,7 +1,8 @@
 UV ?= uv
 DEMO_ACCOUNT ?= reports/paper-demo
+M2_DEMO_DIR ?= reports/m2-demo
 
-.PHONY: install check lint typecheck test format build demo
+.PHONY: install check lint typecheck test format build demo research-demo
 
 install:
 	$(UV) sync --locked --python 3.12
@@ -28,3 +29,9 @@ build:
 demo:
 	$(UV) run --locked invest analyze examples/prices.parquet
 	$(UV) run --locked invest paper --data examples/paper_bars.parquet --config configs/demo.toml --account $(DEMO_ACCOUNT)
+
+research-demo:
+	$(UV) run --locked python examples/generate_research.py --output $(M2_DEMO_DIR)/inputs
+	$(UV) run --locked invest research-register --config configs/m2.toml --output $(M2_DEMO_DIR)/registration.parquet
+	$(UV) run --locked invest research --registration $(M2_DEMO_DIR)/registration.parquet --synthetic --input SPY=$(M2_DEMO_DIR)/inputs/SPY.parquet --input XLF=$(M2_DEMO_DIR)/inputs/XLF.parquet --input XLK=$(M2_DEMO_DIR)/inputs/XLK.parquet --output $(M2_DEMO_DIR)/study
+	$(UV) run --locked invest verify-study --study $(M2_DEMO_DIR)/study

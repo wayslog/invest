@@ -9,6 +9,7 @@ import pyarrow as pa
 from invest.config import PaperConfig
 from invest.market import MONEY
 from invest.quality import regular_sessions
+from invest.risk import position_exit, risk_status
 
 ZERO = Decimal("0")
 UNIT = Decimal("0.000001")
@@ -121,7 +122,14 @@ class Account:
                 unpaid.append((payment, amount))
         self.receivables = unpaid
 
-    def execute(self, session: date, open_price: Decimal, config: PaperConfig) -> None:
+    def execute(
+        self,
+        session: date,
+        open_price: Decimal,
+        config: PaperConfig,
+        *,
+        capital_budget: Decimal | None = None,
+    ) -> None:
         if self.pending is None:
             return
         order = self.pending
@@ -136,7 +144,12 @@ class Account:
         if price <= 0:
             raise ValueError("Slippage and price precision produce a non-positive fill")
         if order.side == "buy":
-            available = min(self.cash, self.equity(open_price) * config.allocation)
+            available = min(
+                self.cash,
+                self.equity(open_price) * config.allocation
+                if capital_budget is None
+                else capital_budget,
+            )
             affordable = max(
                 0,
                 int(
@@ -154,19 +167,30 @@ class Account:
             if quantity < order.quantity:
                 self.event(session, "order_reduced", "Opening gap reduced affordable whole shares")
             self.cash = money(self.cash - quantity * price - config.commission)
+            old_shares, old_income = self.shares, self.position_income
             self.shares += quantity
-            self.entry = (quantity * price + config.commission) / quantity
-            self.position_peak = price
-            self.position_income = ZERO
+            self.entry = (
+                old_shares * self.entry + quantity * price + config.commission
+            ) / self.shares
+            self.position_income = old_income * old_shares / self.shares
+            self.position_peak = (
+                max(
+                    self.position_peak - old_income + self.position_income,
+                    price + self.position_income,
+                )
+                if old_shares
+                else price
+            )
         else:
-            quantity = self.shares
+            quantity = min(order.quantity, self.shares)
             if not quantity:
                 return
             self.cash = money(self.cash + quantity * price - config.commission)
-            self.shares = 0
-            self.entry = ZERO
-            self.position_peak = ZERO
-            self.position_income = ZERO
+            self.shares -= quantity
+            if not self.shares:
+                self.entry = ZERO
+                self.position_peak = ZERO
+                self.position_income = ZERO
         self.trades.append(
             {
                 "date": session,
@@ -194,12 +218,9 @@ class Account:
         if equity < config.initial_cash * Decimal("0.8") and not self.warning_breached:
             self.warning_breached = True
             self.event(session, "capital_warning", "Equity below 80% of initial capital", equity)
-        if equity <= config.initial_cash * Decimal("0.5"):
-            self.status = "terminated"
-        elif self.status != "terminated" and equity <= self.peak * (1 - config.account_drawdown):
-            self.status = "halted"
-        elif self.status == "active" and equity < config.initial_cash * Decimal("0.8"):
-            self.status = "warning"
+        self.status = risk_status(
+            self.status, equity, self.peak, config.initial_cash, config.account_drawdown
+        )
         if self.status != previous_status:
             self.event(session, "risk_state", f"{previous_status} -> {self.status}", equity)
         if self.status != "active":
@@ -213,12 +234,14 @@ class Account:
         if self.shares:
             economic_close = close + self.position_income
             self.position_peak = max(self.position_peak, economic_close)
-            reason = ""
-            if economic_close <= self.entry * (1 - config.stop_loss):
-                reason = "stop_loss"
-            elif economic_close <= self.position_peak * (1 - config.trailing_stop):
-                reason = "trailing_stop"
-            elif (
+            reason = position_exit(
+                economic_close,
+                self.entry,
+                self.position_peak,
+                config.stop_loss,
+                config.trailing_stop,
+            )
+            if not reason and (
                 len(self.closes) >= config.lookback
                 and signal_close <= sum(self.closes[-config.lookback :], ZERO) / config.lookback
             ):

@@ -106,3 +106,11 @@ Alpaca 的 [数据服务说明](https://docs.alpaca.markets/docs/about-market-da
 `APCA_API_SECRET_KEY` 可用，凭据目的域名仍仅为 `data.alpaca.markets`。
 无需再次索取现有凭据，没有把交易域名加入范围。自有 paper 演示、离线检查及单元测试
 继续不依赖外部账户；真实数据与测试数据分别记录。
+
+## M2 范围扩展（2026-10-20）
+
+按预登记研究池读取 SPY、XLF、XLK 的 2021-01-04 至 2026-06-30 历史 SIP。
+SPY/XLF 通过结构、日历、原始响应重放及发行方 22 笔分红金额/支付日核对；
+XLK 因 `Due-bill corporate actions are unsupported` 隔离，未临时替换成其他 ETF。
+继续使用用户确认的 Basic 免费档，无新增订阅。来源、批次和首次捕获时间见
+[M2 验收记录](milestones/m2.md)。市场发布时点、修订终结与更广的企业行动支持仍是边界。

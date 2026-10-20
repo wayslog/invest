@@ -59,12 +59,50 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--source", type=Path, required=True, help="Issuer source Parquet capture"
     )
     dividends.add_argument("--output", type=Path, required=True, help="New Parquet audit report")
+    registration = commands.add_parser("research-register", help="Freeze a research design")
+    registration.add_argument("--config", type=Path, required=True)
+    registration.add_argument("--output", type=Path, required=True)
+    research = commands.add_parser("research", help="Run a registered portfolio study offline")
+    research.add_argument("--registration", type=Path, required=True)
+    research.add_argument(
+        "--input", action="append", required=True, help="SYMBOL=dataset directory"
+    )
+    research.add_argument("--issuer-source", type=Path)
+    research.add_argument(
+        "--synthetic", action="store_true", help="Inputs are synthetic Parquet files"
+    )
+    research.add_argument("--output", type=Path, required=True)
+    study_verify = commands.add_parser("verify-study", help="Verify and replay a saved study")
+    study_verify.add_argument("--study", type=Path, required=True)
+    study_verify.add_argument("--hashes-only", action="store_true")
     args = parser.parse_args(argv)
     exit_code = 0
 
     try:
         if args.command == "analyze":
             output = asdict(analyze_prices(args.parquet))
+        elif args.command == "research-register":
+            from invest.research_registry import register_study
+
+            register_study(args.config, args.output)
+            output = {"registration": str(args.output)}
+        elif args.command == "research":
+            from invest.research import run_study
+            from invest.research_registry import parse_mappings
+
+            directory = run_study(
+                args.registration,
+                parse_mappings(args.input),
+                args.output,
+                issuer=args.issuer_source,
+                synthetic=args.synthetic,
+            )
+            output = {"study": str(directory), "report": str(directory / "report.html")}
+        elif args.command == "verify-study":
+            from invest.research import verify_study
+
+            count = verify_study(args.study, replay=not args.hashes_only)
+            output = {"study": str(args.study), "runs": count, "replayed": not args.hashes_only}
         elif args.command == "paper":
             from invest.quality import latest_completed_session
             from invest.storage import update_paper

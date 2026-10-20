@@ -3,6 +3,7 @@
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from functools import lru_cache
 from importlib.metadata import version
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -31,6 +32,7 @@ QUALITY_SCHEMA = pa.schema(
 )
 
 
+@lru_cache(maxsize=4096)
 def regular_sessions(start: date, end: date) -> pa.Table:
     """Return XNYS regular sessions with UTC opens/closes, including half days."""
     if start > end:
