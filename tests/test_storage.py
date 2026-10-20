@@ -84,3 +84,25 @@ def test_changed_engine_needs_new_account(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr("invest.storage.engine_digest", lambda: "new-implementation")
     with pytest.raises(ValueError, match="implementation changed"):
         update_paper(data, account, BASE)
+
+
+def test_reconciliation_failure_preserves_current_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from invest.paper import PaperResult, simulate
+
+    data, account = tmp_path / "bars.parquet", tmp_path / "account"
+    bars = make_bars([100, 110, 120, 121])
+    pq.write_table(bars.slice(0, 3), data)
+    update_paper(data, account, BASE)
+    pointer = (account / "CURRENT").read_bytes()
+    pq.write_table(bars, data)
+
+    def corrupted(*args: object) -> PaperResult:
+        result = simulate(bars, BASE)
+        return replace(result, trades=result.trades.slice(0, 0))
+
+    monkeypatch.setattr("invest.storage.simulate", corrupted)
+    with pytest.raises(ValueError, match="reconciliation failed"):
+        update_paper(data, account, BASE)
+    assert (account / "CURRENT").read_bytes() == pointer

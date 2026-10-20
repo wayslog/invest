@@ -8,6 +8,7 @@ import pyarrow as pa
 
 from invest.config import PaperConfig
 from invest.market import MONEY
+from invest.quality import regular_sessions
 
 ZERO = Decimal("0")
 UNIT = Decimal("0.000001")
@@ -65,6 +66,8 @@ class Account:
     shares: int = 0
     entry: Decimal = ZERO
     position_peak: Decimal = ZERO
+    position_income: Decimal = ZERO
+    signal_income: Decimal = ZERO
     peak: Decimal = ZERO
     status: str = "active"
     warning_breached: bool = False
@@ -91,13 +94,17 @@ class Account:
             self.shares *= ratio
             self.entry /= ratio
             self.position_peak /= ratio
+            self.position_income /= ratio
+            self.signal_income /= ratio
             self.closes = [value / ratio for value in self.closes]
             if self.pending is not None:
                 self.pending.quantity *= ratio
             self.event(session, "split", f"{ratio}:1 forward split")
         dividend = row["dividend"]
         assert isinstance(dividend, Decimal)
+        self.signal_income += dividend
         if dividend and self.shares:
+            self.position_income += dividend
             payment = row["dividend_pay_date"]
             assert isinstance(payment, date)
             amount = money(dividend * self.shares)
@@ -114,14 +121,16 @@ class Account:
                 unpaid.append((payment, amount))
         self.receivables = unpaid
 
-    def execute(self, session: date, open_price: Decimal, volume: int, config: PaperConfig) -> None:
+    def execute(self, session: date, open_price: Decimal, config: PaperConfig) -> None:
         if self.pending is None:
             return
         order = self.pending
-        if volume == 0:
-            self.event(session, "order_deferred", "No volume; pending order retained")
-            return
         self.pending = None
+        if session <= order.decision_date:
+            raise ValueError("An order cannot fill before the session after its decision")
+        if regular_sessions(order.decision_date, session).num_rows != 2:
+            self.event(session, "order_expired", "Order valid only at the next session open")
+            return
         direction = Decimal("1") if order.side == "buy" else Decimal("-1")
         price = money(open_price * (1 + direction * config.slippage_bps / 10000))
         if price <= 0:
@@ -148,6 +157,7 @@ class Account:
             self.shares += quantity
             self.entry = (quantity * price + config.commission) / quantity
             self.position_peak = price
+            self.position_income = ZERO
         else:
             quantity = self.shares
             if not quantity:
@@ -156,6 +166,7 @@ class Account:
             self.shares = 0
             self.entry = ZERO
             self.position_peak = ZERO
+            self.position_income = ZERO
         self.trades.append(
             {
                 "date": session,
@@ -171,7 +182,8 @@ class Account:
         )
 
     def decide(self, session: date, close: Decimal, config: PaperConfig, benchmark: bool) -> None:
-        self.closes.append(close)
+        signal_close = close + self.signal_income
+        self.closes.append(signal_close)
         self.peak = max(self.peak, self.equity(close))
         if benchmark:
             if not self.shares and self.pending is None and len(self.closes) >= config.lookback:
@@ -199,22 +211,23 @@ class Account:
         if self.pending is not None:
             return
         if self.shares:
-            self.position_peak = max(self.position_peak, close)
+            economic_close = close + self.position_income
+            self.position_peak = max(self.position_peak, economic_close)
             reason = ""
-            if close <= self.entry * (1 - config.stop_loss):
+            if economic_close <= self.entry * (1 - config.stop_loss):
                 reason = "stop_loss"
-            elif close <= self.position_peak * (1 - config.trailing_stop):
+            elif economic_close <= self.position_peak * (1 - config.trailing_stop):
                 reason = "trailing_stop"
             elif (
                 len(self.closes) >= config.lookback
-                and close <= sum(self.closes[-config.lookback :], ZERO) / config.lookback
+                and signal_close <= sum(self.closes[-config.lookback :], ZERO) / config.lookback
             ):
                 reason = "trend_exit"
             if reason:
                 self.pending = Order(session, "sell", self.shares, reason)
         elif (
             len(self.closes) >= config.lookback
-            and close > sum(self.closes[-config.lookback :], ZERO) / config.lookback
+            and signal_close > sum(self.closes[-config.lookback :], ZERO) / config.lookback
         ):
             self.queue_buy(session, close, config, "trend_entry")
 
@@ -236,6 +249,13 @@ class PaperResult:
 
 
 def simulate(bars: pa.Table, config: PaperConfig) -> PaperResult:
+    # Reject an unusable history as a whole. Never condition an opening fill on
+    # the volume learned at that session's close.
+    if not bars.num_rows or any(value <= 0 for value in bars["volume"].to_pylist()):
+        raise ValueError("Zero-volume history cannot support the daily-open fill proxy")
+    dates = bars["date"].to_pylist()
+    if dates != regular_sessions(dates[0], dates[-1])["date"].to_pylist():
+        raise ValueError("Simulation requires complete XNYS sessions")
     account = Account(cash=money(config.initial_cash), peak=config.initial_cash)
     baseline = Account(cash=money(config.initial_cash), peak=config.initial_cash)
     snapshots: list[dict[str, object]] = []
@@ -244,7 +264,7 @@ def simulate(bars: pa.Table, config: PaperConfig) -> PaperResult:
         session, close = row["date"], row["close"]
         for ledger, benchmark in [(account, False), (baseline, True)]:
             ledger.corporate_actions(row)
-            ledger.execute(session, row["open"], row["volume"], config)
+            ledger.execute(session, row["open"], config)
             ledger.decide(session, close, config, benchmark)
         equity = account.equity(close)
         drawdown = float(equity / account.peak - 1)
@@ -283,6 +303,8 @@ def simulate(bars: pa.Table, config: PaperConfig) -> PaperResult:
                 "commissions": money(config.commission * len(account.trades)),
                 "status": account.status,
                 "pending_order": account.pending is not None,
+                "fill_model": "provider_daily_open_proxy; next_session_only",
+                "cash_model": "USD_no_external_flows; settlement_not_modeled",
             }
         ]
     )

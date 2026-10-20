@@ -4,11 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wayslog-invest"
-version = "0.2.0"
+version = "0.3.2"
 description = "A personal research framework for US equity investing."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "exchange-calendars>=4.5,<5",
     "filelock>=3.17,<4",
     "matplotlib>=3.9,<4",
     "numpy>=2.0,<3",
@@ -72,5 +73,5 @@ untyped_calls_exclude = ["pyarrow"]
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["pyarrow", "pyarrow.*"]
+module = ["pyarrow", "pyarrow.*", "exchange_calendars", "exchange_calendars.*"]
 ignore_missing_imports = true

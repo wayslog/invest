@@ -34,6 +34,10 @@ def read_bars(path: Path, symbol: str) -> pa.Table:
     if path.suffix.lower() != ".parquet":
         raise ValueError("Daily bars must be a .parquet file")
     table = pq.read_table(path)
+    return validate_bars(table, symbol)
+
+
+def validate_bars(table: pa.Table, symbol: str) -> pa.Table:
     if not table.schema.equals(BAR_SCHEMA, check_metadata=False):
         raise ValueError("Daily bar schema does not match invest.bars.v1; see docs/data.md")
     metadata = table.schema.metadata or {}

@@ -28,6 +28,12 @@ def write_report(result: PaperResult, output: Path) -> None:
         for key, value in metrics.items()
     )
     source = escape(str(metrics["data_source"]))
+    dividend_status = (
+        "Issuer cash dividends matched; see dividends.parquet and dividend-source.parquet. "
+        "Other corporate actions and historical publication times remain outside that check. "
+        if (output / "dividends.parquet").exists()
+        else "Historical publication times and action completeness still need external review. "
+    )
     (output / "report.html").write_text(
         '<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
         "<title>Invest paper account</title>"
@@ -36,11 +42,15 @@ def write_report(result: PaperResult, output: Path) -> None:
         "img{max-width:100%}</style><h1>Local paper account</h1>"
         f"<p>Data source: {source}. "
         "Synthetic data validates software, not investment performance.</p>"
-        "<p>Decisions use closing prices; fills use subsequent session opens. "
+        "<p>Signals and position exits include cash dividends when earned. "
+        "Orders are valid only at the next session open, using the provider's daily-open proxy. "
         "No real order book, tax or broker simulation. The benchmark uses the same warm-up, "
         "allocation cap and costs, without strategy exits.</p>"
         f'<table>{rows}</table><img src="equity.png" alt="Net asset value and drawdown">'
-        "<p>Ledgers: equity.parquet, trades.parquet, events.parquet. "
+        "<p>Data quality and independent cash-flow reconciliation passed before publication. "
+        "See quality.parquet and reconciliation.parquet; source captures are retained. "
+        f"{dividend_status}"
+        "Ledgers: equity.parquet, trades.parquet, events.parquet. "
         "Unfilled final orders remain pending for the next update.</p></html>",
         encoding="utf-8",
     )

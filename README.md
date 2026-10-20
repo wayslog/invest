@@ -2,10 +2,13 @@
 
 个人美股投资研究框架，使用 **Python 3.12 + uv + Parquet**。
 当前提供单标的日线 paper 账户：均线信号、次日模拟成交、资金核算、风险退出、
-买入持有基准，以及可持久化的账本与图表报告。运行无需券商账户或密钥。
+买入持有基准，以及可持久化的账本与图表报告。演示和测试无需账户或密钥；
+真实行情采集使用 Alpaca 的只读数据 API。
 
 项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
-当前已完成工程原型，下一阶段优先接入真实数据并核对单标的账户行为。
+M0 工程原型已通过验收，见 [M0 验收记录](docs/milestones/m0.md)。
+M1 已完成：SPY 真实历史数据、质量准入、发行方分红核对和账户回放通过本地验收，
+见 [M1 验收记录](docs/milestones/m1.md)。当前版本 `0.3.2`，下一阶段为 M2 策略比较。
 
 ## 快速开始
 
@@ -48,22 +51,59 @@ uv run --locked invest paper \
 新的完整快照。首版以正确性优先，没有引入单独的增量会计实现。
 
 - 单账户单标的、美元、整股、多头与现金；当前不支持多标的组合、空头或杠杆。
-- 收盘生成订单，后续交易日开盘模拟成交，计入固定每单费用和双向滑点。
-- 现金不足会缩减买单；无成交量时保留待成交订单，不凭空成交。
+- 收盘生成订单，仅在下一交易日开盘有效，计入固定每单费用和双向滑点。
+- 现金不足会缩减买单；零成交量或缺失交易日会拒绝该段历史，保留原账本。
 - 分红先计应收，在支付日才成为现金；支持整数倍正向拆股。
 - 趋势退出、单仓止损、单仓利润回撤、账户高点回撤，以及本金警戒/终止。
 - 账户状态和待成交订单跨运行保留；停用后不会因重启或价格反弹自行恢复。
 - 基准使用相同预热期、仓位上限、成交费用和企业行动，随后持续持有。
 
-这些是日线模拟假设，不代表真实成交。没有实时行情采集、交易日完整性验证、订单簿、
-税费或券商订单状态处理，不能把模拟数据直接解释为实盘收益。
+`paper` 更新前强制检查日历、数据完整性和独立对账。日线开盘价仍是模拟成交代理，
+没有盘口、税费、资金结算或券商订单状态模拟；真实数据批次仅用于有明确限制的历史研究。
 
-Alpaca 暂不作为依赖。下一步先接入经过校验的真实日线数据，再做前向 paper 观察；
-需要验证外部订单提交、撤单、部分成交和核对时，再增加券商 paper 适配器。
+## 真实历史数据流程
+
+通过环境安全设置提供 `APCA_API_KEY_ID` 和 `APCA_API_SECRET_KEY`；云环境的凭据目的域名
+只需 `data.alpaca.markets`。不要把值写入仓库、命令行或聊天。此流程不会提交券商订单。
+
+```bash
+uv run --locked invest fetch --symbol SPY \
+  --start 2024-01-02 --end 2024-12-31 --feed sip --output data/alpaca
+```
+
+命令返回新批次路径、状态和错误摘要。`quarantined` 批次不可运行；`research_only`
+表示当前结构、日历和映射检查通过，仍需核实历史发布时点及企业行动覆盖。
+SIP 访问失败时不会自动改用 IEX，必须先确认账户数据权限和口径。
+
+把返回的路径填入下列变量，再离线复现并回放：
+
+```bash
+m1_dataset="data/alpaca/实际批次编号"
+uv run --locked invest verify-data --dataset "$m1_dataset"
+uv run --locked invest capture-dividends --output data/ssga-source.parquet
+uv run --locked invest audit-dividends --dataset "$m1_dataset" \
+  --source data/ssga-source.parquet --output reports/spy-dividends.parquet
+uv run --locked invest paper --dataset "$m1_dataset" \
+  --dividend-source data/ssga-source.parquet \
+  --config configs/spy-research.toml --account reports/spy-m1
+```
+
+`capture-dividends` 读取 State Street 公共分红表，原始响应仍保存在 Parquet 中；后续核对
+和回放均可离线运行。输出已存在时拒绝覆盖，应复用现有来源或另存新版本。
+指定 `--dividend-source` 后，分红日期、金额或支付日不一致会阻止账户更新，核对证据随
+快照保存。M1 已验证 SPY 2021—2025 年；更早的缺字段/超精度事件有明确隔离记录。
+
+逐日更新时可加 `--require-current`，缺少最近可接纳日线就拒绝更新。Alpaca 日线保守等到
+该交易日的次日纽约时间 00:15；交易所收盘本身不代表供应方整日日线已完整。
+这仍不保证发布时间或修订终结，历史回放不加此选项。
+新批次保留旧数据；若发现历史价格或企业行动修订，旧账户拒绝接续，应另开研究目录对照。
+资金账户跨策略版本连续运行、真实前向决策记录和券商 paper 属于后续阶段。
 
 ## 数据、参数和输出
 
 - 数据格式及复权/分红口径：[Parquet 数据约定](docs/data.md)。
+- 日历与质量检查：[使用方法和检查边界](docs/data.md#交易日历与质量报告)。
+- 真实行情来源：[M1 数据源评估记录](docs/data-sources.md)。
 - 账户状态、默认研究参数、限制及验收范围：[Paper 账户说明](docs/paper.md)。
 - 模块划分及后续方向：[架构说明](docs/architecture.md)。
 - `configs/demo.toml` 中的参数是工程演示默认值，尚未经过有效性验证。
@@ -80,6 +120,11 @@ reports/paper-demo/
     ├── events.parquet         分红、拆股、拒单及风险事件
     ├── benchmark_trades.parquet
     ├── metrics.parquet        汇总指标
+    ├── quality.parquet        账户输入的质量检查
+    ├── reconciliation.parquet 策略及基准逐日独立对账
+    ├── dividends.parquet      发行方分红核对（指定 --dividend-source 时）
+    ├── dividend-source.parquet 对应的原始来源证据
+    ├── dataset/               真实数据批次的完整副本（使用 --dataset 时）
     ├── equity.png             净值和回撤图
     └── report.html            报告
 ```

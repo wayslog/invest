@@ -132,8 +132,7 @@ def test_pending_order_is_adjusted_on_split() -> None:
     assert result.equity.to_pylist()[-1]["cash"] == 50
 
 
-def test_zero_volume_retains_order_until_tradable_session() -> None:
+def test_zero_volume_rejects_history_instead_of_using_future_volume_for_open_fills() -> None:
     bars = make_bars([100, 110, 120, 130], updates={2: {"volume": 0}})
-    result = simulate(bars, BASE)
-    assert result.trades.to_pylist()[0]["date"] == bars["date"].to_pylist()[3]
-    assert result.equity.to_pylist()[2]["pending_side"] == "buy"
+    with pytest.raises(ValueError, match="Zero-volume"):
+        simulate(bars, BASE)

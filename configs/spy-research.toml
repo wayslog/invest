@@ -1,0 +1,10 @@
+# 历史研究默认值；不代表策略已通过验证或可用于实盘。
+symbol = "SPY"
+initial_cash = "5000"
+lookback = 20
+allocation = "0.8"
+commission = "1"
+slippage_bps = "5"
+stop_loss = "0.08"
+trailing_stop = "0.12"
+account_drawdown = "0.15"
