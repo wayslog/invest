@@ -170,6 +170,10 @@ def execute(
         run_quiet([*ssh, "bash -s"], "Host preflight", data=(root / "preflight.sh").read_bytes())
         if operation == "preflight":
             print("SSH, systemd, clock and uv checks passed; host unchanged.")
+            version = run_quiet([*ssh, "openssl version"], "Check host cryptography")
+            match = re.match(rb"OpenSSL ([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.-]*)\b", version)
+            if match:
+                print("Host OpenSSL version:", match[1].decode("ascii"))
             return
         if operation == "prepare-handoff":
             certificate = run_quiet(

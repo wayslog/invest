@@ -43,7 +43,7 @@ if [[ -x /opt/invest/current/.venv/bin/invest && -d /var/lib/invest/account/jour
   done
 fi
 tar -czf "$work/private.tar.gz" -C "$work/files" .
-openssl cms -encrypt -binary -aes-256-gcm -recip "$work/recipient.pem" \
+openssl cms -encrypt -binary -aes-256-cbc -recip "$work/recipient.pem" \
   -keyopt rsa_padding_mode:oaep -keyopt rsa_oaep_md:sha256 -in "$work/private.tar.gz" \
   -out "$work/status.cms" -outform DER 2>"$work/encryption.log"
 cat "$work/status.cms"
