@@ -1,0 +1,136 @@
+name: Publish deployed release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: invest-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Require main
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: test "$RELEASE_REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.23"
+      - name: Select a successful main deployment with its tested source
+        id: deployed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess, tomllib
+          from pathlib import Path
+          repo = os.environ['GITHUB_REPOSITORY']
+          version = tomllib.loads(Path('pyproject.toml').read_text())['project']['version']
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+              raise SystemExit('Release requires a stable version')
+          tag = 'v' + version
+          if not (Path('docs/releases') / (tag + '.md')).is_file():
+              raise SystemExit('Write the release notes before publishing')
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', path]))
+          runs = api(f'repos/{repo}/actions/workflows/deploy.yml/runs?branch=main&event=workflow_dispatch&status=success&per_page=100')['workflow_runs']
+          for run in runs:
+              if run['head_branch'] != 'main' or run['event'] != 'workflow_dispatch':
+                  continue
+              jobs = api(f'repos/{repo}/actions/runs/{run["id"]}/jobs')['jobs']
+              if not any(job['name'] == 'deploy' and job['conclusion'] == 'success' for job in jobs):
+                  continue
+              commit = run['head_sha']
+              if not re.fullmatch('[0-9a-f]{40}', commit):
+                  raise SystemExit('Invalid deployed commit')
+              subprocess.run(['git', 'merge-base', '--is-ancestor', commit, os.environ['GITHUB_SHA']], check=True)
+              with Path(os.environ['GITHUB_OUTPUT']).open('a') as stream:
+                  stream.write(f'run_id={run["id"]}\ncommit={commit}\nversion={version}\ntag={tag}\n')
+              break
+          else:
+              raise SystemExit('No successful application deployment found')
+          PY
+      - uses: actions/download-artifact@v4
+        with:
+          name: tested-source
+          path: release-files
+          run-id: ${{ steps.deployed.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Rebuild wheel from the tested and deployed source
+        env:
+          RELEASE_VERSION: ${{ steps.deployed.outputs.version }}
+        run: uv build --wheel "release-files/wayslog_invest-${RELEASE_VERSION}.tar.gz" --out-dir release-files
+      - name: Verify assets and publish the deployed commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.deployed.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.deployed.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.deployed.outputs.commit }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, subprocess, tarfile, tomllib, zipfile
+          from pathlib import Path
+          repo, tag, version, commit = (os.environ[name] for name in
+              ('GITHUB_REPOSITORY', 'RELEASE_TAG', 'RELEASE_VERSION', 'RELEASE_COMMIT'))
+          source = Path(f'release-files/wayslog_invest-{version}.tar.gz')
+          wheel = Path(f'release-files/wayslog_invest-{version}-py3-none-any.whl')
+          prefix = f'wayslog_invest-{version}'
+          def engine(rows):
+              result = hashlib.sha256()
+              for name, body in sorted(rows):
+                  result.update(name.encode())
+                  result.update(body)
+              return result.hexdigest()
+          with tarfile.open(source) as bundle:
+              metadata = bundle.extractfile(f'{prefix}/pyproject.toml')
+              assert metadata is not None
+              assert tomllib.loads(metadata.read().decode())['project']['version'] == version
+              rows = []
+              for member in bundle.getmembers():
+                  path = Path(member.name)
+                  if path.parent.as_posix() == f'{prefix}/src/invest' and path.suffix == '.py':
+                      stream = bundle.extractfile(member)
+                      assert stream is not None
+                      rows.append((path.name, stream.read()))
+              source_engine = engine(rows)
+              assert rows
+          with zipfile.ZipFile(wheel) as bundle:
+              rows = [(Path(name).name, bundle.read(name)) for name in bundle.namelist()
+                      if Path(name).parent.as_posix() == 'invest' and name.endswith('.py')]
+              assert engine(rows) == source_engine
+          checksums = {path.name: 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+                       for path in (source, wheel)}
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', path]))
+          releases = api(f'repos/{repo}/releases?per_page=100')
+          existing = next((item for item in releases if item['tag_name'] == tag), None)
+          common = ['--repo', repo]
+          notes = str(Path('docs/releases') / (tag + '.md'))
+          if existing and not existing['draft']:
+              actual = api(f'repos/{repo}/commits/{tag}')['sha']
+              assert actual == commit, 'Published tag differs from the deployed commit'
+              assets = {item['name']: item.get('digest') for item in existing['assets']}
+              assert all(assets.get(name) == digest for name, digest in checksums.items()), 'Published assets differ'
+          elif existing:
+              assert existing['target_commitish'] == commit, 'Draft target differs from the deployed commit'
+              subprocess.run(['gh', 'release', 'upload', tag, str(source), str(wheel), '--clobber', *common], check=True)
+              subprocess.run(['gh', 'release', 'edit', tag, '--draft=false', '--latest', '--notes-file', notes, *common], check=True)
+          else:
+              subprocess.run(['gh', 'release', 'create', tag, str(source), str(wheel), '--target', commit,
+                  '--title', tag + '：现金观察与每日运行', '--notes-file', notes, '--latest', *common], check=True)
+          print(f'Published https://github.com/{repo}/releases/tag/{tag}')
+          PY
