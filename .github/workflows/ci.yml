@@ -3,6 +3,11 @@ name: Python checks
 on:
   push:
   pull_request:
+  workflow_call:
+    outputs:
+      source_sha256:
+        description: SHA-256 of the tested source archive
+        value: ${{ jobs.check.outputs.source_sha256 }}
 
 permissions:
   contents: read
@@ -10,8 +15,13 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      source_sha256: ${{ steps.release.outputs.source_sha256 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -24,3 +34,14 @@ jobs:
       - run: make demo
       - run: make forward-demo
       - run: make build
+      - name: Identify the tested release
+        id: release
+        run: uv run --locked python deploy/release.py digest dist >> "$GITHUB_OUTPUT"
+      - name: Pass source code to the deployment job
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tested-source
+          path: dist/*.tar.gz
+          retention-days: 7
+          if-no-files-found: error

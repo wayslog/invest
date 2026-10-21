@@ -1,6 +1,6 @@
 # M2 策略与组合研究
 
-当前版本：`0.5.2`；M2 首轮版本 `0.4.1`，R1 已有结果冻结于 `0.5.1`。
+当前版本：`0.6.0`；M2 首轮版本 `0.4.1`，R1 已有结果冻结于 `0.5.1`。
 参数和选择规则见 [预登记方案](m2-protocol.md)，
 结果与局限见 [M2 验收记录](../milestones/m2.md)。这里只运行本地历史研究账户。
 
@@ -24,6 +24,11 @@ UTC 时间和引擎源码 SHA-256；运行前必须与当前引擎匹配，否�
 探索已知历史时，登记须加 `--known-history`。v3 将这一暴露声明与配置一起冻结，
 结果范围为 `known_history_research_only`，即使收益检查全过也不能授予正式资格。
 例子见 [R1 方案](r1-long-horizon.md) 与 [实际结果](r1-long-horizon-results.md)。
+失败原因与下一方案见 [R1 复盘](r1-postmortem.md) 和
+[固定风险预算预登记](r1-capital-budget.md)。新配置可显式指定 `candidate_kinds`，
+默认仍为 trend/rotation 两类；新方案只固定 rotation-120，避免额外搜索。
+`research-propose` 同时冻结假设原文、已知截止日、未来窗口、源码与依赖锁。
+未来窗口未结束时不运行不完整的 holdout；登记不会自动授予策略资格或创建资金账户。
 
 ```bash
 uv run --locked invest research-register \

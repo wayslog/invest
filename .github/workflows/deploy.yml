@@ -1,0 +1,84 @@
+name: Deploy to Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: First check connectivity, then deploy the tested main commit
+        type: choice
+        options: [preflight, deploy]
+        default: preflight
+
+permissions:
+  contents: read
+
+concurrency:
+  group: invest-production
+  cancel-in-progress: false
+
+jobs:
+  trusted-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require main
+        env:
+          DEPLOY_REF: ${{ github.ref }}
+        run: test "$DEPLOY_REF" = refs/heads/main
+
+  preflight:
+    needs: trusted-branch
+    if: inputs.operation == 'preflight'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check SSH and host prerequisites without changing the host
+        env:
+          INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
+          INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
+          INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
+          INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
+        run: python deploy/github_actions.py preflight
+
+  build:
+    needs: trusted-branch
+    if: inputs.operation == 'deploy'
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: tested-source
+          path: release-artifact
+      - name: Deploy, verify Telegram and reconciliation, then enable timers
+        env:
+          INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
+          INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
+          INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
+          INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          INVEST_TELEGRAM_BOT_TOKEN: ${{ secrets.INVEST_TELEGRAM_BOT_TOKEN }}
+          INVEST_TELEGRAM_ALLOWED_UID: ${{ secrets.INVEST_TELEGRAM_ALLOWED_UID }}
+          INVEST_RELEASE_SHA256: ${{ needs.build.outputs.source_sha256 }}
+          INVEST_DEPLOY_COMMIT: ${{ github.sha }}
+          INVEST_DEPLOY_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: python deploy/github_actions.py deploy --artifact release-artifact

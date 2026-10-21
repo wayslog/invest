@@ -72,6 +72,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Freeze prior exposure; results cannot qualify for formal forward observation",
     )
+    proposal = commands.add_parser(
+        "research-propose", help="Freeze a hypothesis and future validation"
+    )
+    proposal.add_argument("--config", type=Path, required=True)
+    proposal.add_argument("--protocol", type=Path, required=True)
+    proposal.add_argument("--known-through", type=date.fromisoformat, required=True)
+    proposal.add_argument("--lockfile", type=Path, default=Path("uv.lock"))
+    proposal.add_argument("--output", type=Path, required=True)
+    diagnostic = commands.add_parser(
+        "research-diagnose", help="Explain sealed historical risk and attribution"
+    )
+    diagnostic.add_argument("--study", type=Path, required=True)
+    diagnostic.add_argument("--output", type=Path, required=True)
     research = commands.add_parser("research", help="Run a registered portfolio study offline")
     research.add_argument("--registration", type=Path, required=True)
     research.add_argument(
@@ -107,6 +120,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             register_study(args.config, args.output, known_history=args.known_history)
             output = {"registration": str(args.output)}
+        elif args.command == "research-propose":
+            from invest.research_proposals import register_proposal
+
+            output = register_proposal(
+                args.config, args.protocol, args.output, args.known_through, lockfile=args.lockfile
+            )
+        elif args.command == "research-diagnose":
+            from invest.research_diagnostics import diagnose_study
+
+            output = diagnose_study(args.study, args.output)
         elif args.command == "research":
             from invest.research import run_study
             from invest.research_registry import parse_mappings

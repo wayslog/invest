@@ -1,0 +1,25 @@
+[Unit]
+Description=Invest forward data capture, reconciliation and backup
+Wants=network-online.target
+After=network-online.target
+OnFailure=invest-forward-failure.service
+
+[Service]
+Type=oneshot
+User=invest
+Group=invest
+WorkingDirectory=/opt/invest/current
+EnvironmentFile=/etc/invest/invest.env
+Environment=MPLCONFIGDIR=/var/lib/invest/cache/matplotlib
+ExecStart=/opt/invest/current/.venv/bin/invest forward-service --config /etc/invest/operations.toml
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/invest
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=

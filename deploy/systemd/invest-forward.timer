@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Invest hourly after the daily data cutoff
+
+[Timer]
+OnCalendar=*-*-* *:17:00 UTC
+Persistent=true
+RandomizedDelaySec=30s
+AccuracySec=10s
+Unit=invest-forward.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+# 本地人工验收模板；服务器部署使用 deploy/operations.toml。
+account = "../reports/m3-cash-account"
+data_root = "../data/m3-daily"
+backup_root = "../reports/backups/daily"
+state_root = "../reports/operations"
+attempts = 2
+heartbeat_max_minutes = 150
+alert_cooldown_minutes = 360
+telegram_required = true
+telegram_token_env = "INVEST_TELEGRAM_BOT_TOKEN"
+telegram_uid_env = "INVEST_TELEGRAM_ALLOWED_UID"

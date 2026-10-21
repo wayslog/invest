@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Invest heartbeat every fifteen minutes
+
+[Timer]
+OnCalendar=*-*-* *:07,22,37,52:00 UTC
+Persistent=true
+AccuracySec=10s
+Unit=invest-forward-health.service
+
+[Install]
+WantedBy=timers.target

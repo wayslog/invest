@@ -59,7 +59,7 @@ class Candidate:
 
 def candidates(config: StudyConfig) -> list[Candidate]:
     return [
-        Candidate(kind, window) for kind in ["trend", "rotation"] for window in config.lookbacks
+        Candidate(kind, window) for kind in config.candidate_kinds for window in config.lookbacks
     ]
 
 

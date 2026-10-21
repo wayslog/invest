@@ -37,6 +37,7 @@ class StudyConfig:
     holdout_start: date
     holdout_end: date
     walk_forward_years: tuple[int, ...]
+    candidate_kinds: tuple[str, ...] = ("trend", "rotation")
 
     def __post_init__(self) -> None:
         if (
@@ -61,6 +62,12 @@ class StudyConfig:
                 raise ValueError("Research windows/counts must be positive integers")
         if not self.lookbacks or min(self.lookbacks) < 2 or self.correlation_window < 2:
             raise ValueError("Signal/correlation windows must be >= 2")
+        if (
+            not self.candidate_kinds
+            or len(set(self.candidate_kinds)) != len(self.candidate_kinds)
+            or set(self.candidate_kinds) - {"trend", "rotation"}
+        ):
+            raise ValueError("Candidate families must be unique trend/rotation names")
         if len(set(self.lookbacks)) != len(self.lookbacks):
             raise ValueError("Duplicate lookbacks would hide the candidate count")
         if not math.isfinite(self.correlation_limit) or not 0 <= self.correlation_limit <= 1:
@@ -122,6 +129,7 @@ class StudyConfig:
 
 def parse_study(body: bytes) -> StudyConfig:
     values = tomllib.loads(body.decode())
+    values.setdefault("candidate_kinds", ["trend", "rotation"])
     expected = {field.name for field in fields(StudyConfig)}
     if values.keys() != expected:
         raise ValueError(f"Study fields differ: {sorted(values.keys() ^ expected)}")
@@ -139,7 +147,13 @@ def parse_study(body: bytes) -> StudyConfig:
             values[key] = Decimal(str(values[key]))
         except InvalidOperation as exc:
             raise ValueError(f"{key} must be a decimal") from exc
-    for key in ["symbols", "lookbacks", "cost_multipliers", "walk_forward_years"]:
+    for key in [
+        "symbols",
+        "lookbacks",
+        "cost_multipliers",
+        "walk_forward_years",
+        "candidate_kinds",
+    ]:
         if not isinstance(values[key], list):
             raise ValueError(f"{key} must be an array")
         values[key] = tuple(values[key])

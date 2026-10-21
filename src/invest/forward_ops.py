@@ -70,29 +70,33 @@ def forward_job(
 
 
 def backup_forward(account: Path, output: Path) -> dict[str, Any]:
+    with account_lock(account):
+        return _backup_runs(account, _runs(account), output)
+
+
+def _backup_runs(account: Path, runs: list[Path], output: Path) -> dict[str, Any]:
+    """The caller holds the account lock, including when backing up a migration parent."""
     if output.exists() or output.resolve().is_relative_to(account.resolve()):
         raise ValueError("Backup must be a new path outside the account")
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = output.parent / f".{output.name}.{uuid.uuid4().hex}.backup"
-    with account_lock(account):
-        runs = _runs(account)
-        try:
-            for run in runs:
-                shutil.copytree(run, staging / "journal" / run.name)
-            copied = _runs(staging)
-            head = checksum(copied[-1] / "files.parquet")
-            write_table(
-                pa.Table.from_pylist(
-                    [{"head": head, "commits": len(copied)}],
-                    schema=pa.schema([("head", pa.string()), ("commits", pa.int64())]),
-                ),
-                staging / "backup.parquet",
-            )
-            seal(staging)
-            staging.rename(output)
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
+    try:
+        for run in runs:
+            shutil.copytree(run, staging / "journal" / run.name)
+        copied = _runs(staging)
+        head = checksum(copied[-1] / "files.parquet")
+        write_table(
+            pa.Table.from_pylist(
+                [{"head": head, "commits": len(copied)}],
+                schema=pa.schema([("head", pa.string()), ("commits", pa.int64())]),
+            ),
+            staging / "backup.parquet",
+        )
+        seal(staging)
+        staging.rename(output)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return {"backup": str(output), "head": head, "commits": len(runs)}
 
 

@@ -19,6 +19,10 @@
   M3 forward capital accounts keep their identity and risk history; never replace
   them with fresh capital to bypass a frozen engine or a paused/risk-halted state.
   Run `make forward-demo M3_DEMO_DIR=reports/<new-name>` for forward-engine changes.
+  Version transitions use `forward-migrate` with the expected head, source engine,
+  verified backup and actor/reason; only cash observations and drills support it.
+  Do not rewrite registration or historical journal files. A deployed capital
+  account has one authoritative writer; never update a stale local copy in parallel.
 - In cloud sessions, set `MPLCONFIGDIR=/workspace/.cache/invest-matplotlib` if needed
   for Matplotlib's writable font cache.
 - Keep credentials, downloaded datasets and private reports out of Git. Use the

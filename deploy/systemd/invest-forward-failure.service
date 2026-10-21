@@ -1,0 +1,22 @@
+[Unit]
+Description=Notify the owner after a systemd process failure or timeout
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=invest
+Group=invest
+WorkingDirectory=/opt/invest/current
+EnvironmentFile=/etc/invest/invest.env
+Environment=MPLCONFIGDIR=/var/lib/invest/cache/matplotlib
+ExecStart=/opt/invest/current/.venv/bin/invest forward-system-failure --config /etc/invest/operations.toml
+TimeoutStartSec=1min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/invest
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=

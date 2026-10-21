@@ -1,6 +1,5 @@
 """Single-host, append-only forward accounts with atomic directory commits."""
 
-import hashlib
 import os
 import shutil
 import sys
@@ -26,6 +25,7 @@ from invest.forward_engine import (
     cancel_future,
     next_session,
 )
+from invest.forward_versions import check_archive, validate_versions, verify_archived
 from invest.market import read_bars
 from invest.paper import ZERO, Account
 from invest.portfolio_audit import audit_portfolio
@@ -138,11 +138,7 @@ def _load(account: Path) -> tuple[list[Path], Observation, StudyConfig, ForwardS
     row = pq.read_table(runs[0] / "registration.parquet").to_pylist()[0]
     plan, policy = parse_observation(row["observation_body"]), parse_study(row["policy_body"])
     _check_binding(runs[0], row["engine_sha256"], plan)
-    if any(
-        pq.read_table(run / "journal.parquet")["engine_sha256"][0].as_py() != row["engine_sha256"]
-        for run in runs
-    ):
-        raise ValueError("Forward journal engine differs from registration")
+    validate_versions(runs, row["engine_sha256"])
     state = ForwardState.load(
         {
             name: pq.read_table(runs[-1] / f"{name}.parquet")
@@ -153,13 +149,7 @@ def _load(account: Path) -> tuple[list[Path], Observation, StudyConfig, ForwardS
 
 
 def _check_binding(genesis: Path, digest: str, plan: Observation) -> None:
-    archived = hashlib.sha256()
-    sources = pq.read_table(genesis / "engine-source.parquet").to_pylist()
-    for source in sorted(sources, key=lambda row: row["file"]):
-        archived.update(source["file"].encode())
-        archived.update(source["body"])
-    if archived.hexdigest() != digest:
-        raise ValueError("Archived forward engine differs from registration")
+    check_archive(genesis, digest)
     if plan.mode in {"qualified_strategy", "shadow_research"}:
         qualification = genesis / "qualification"
         read_registration(qualification / "registration.parquet", required_engine=digest)
@@ -203,7 +193,13 @@ def _publish(
 ) -> Path:
     genesis = runs[0] if runs else staging
     registration = pq.read_table(genesis / "registration.parquet").to_pylist()[0]
-    digest = registration["engine_sha256"]
+    digest = (
+        pq.read_table(staging / "migration.parquet")["to_engine_sha256"][0].as_py()
+        if kind == "migrate"
+        else pq.read_table(runs[-1] / "journal.parquet")["engine_sha256"][0].as_py()
+        if runs
+        else registration["engine_sha256"]
+    )
     _require_engine(digest)
     for name, table in tables.items():
         write_table(table, staging / f"{name}.parquet")
@@ -256,6 +252,8 @@ def _publish(
         encoding="utf-8",
     )
     seal(staging)
+    if kind == "migrate":
+        validate_versions([*runs, staging], registration["engine_sha256"])
     # There is no separately updated CURRENT pointer: the rename IS the commit.
     for path in staging.rglob("*"):
         if path.is_file():
@@ -462,7 +460,10 @@ def init_forward(
     now = _at(plan, at)
     if set(plan.symbols) - set(policy.symbols):
         raise ValueError("Observation symbols must come from the frozen policy")
-    if plan.signal.is_strategy and plan.signal.lookback not in policy.lookbacks:
+    if plan.signal.is_strategy and (
+        plan.signal.lookback not in policy.lookbacks
+        or plan.signal.kind not in policy.candidate_kinds
+    ):
         raise ValueError("Candidate window was not registered in the policy")
     if regular_sessions(plan.start_session, plan.start_session).num_rows != 1:
         raise ValueError("Observation must start on an XNYS session")
@@ -792,7 +793,15 @@ def forward_status(account: Path, *, at: datetime | None = None) -> dict[str, An
             "decision_deadline": next_session(next_day)["open_at"].isoformat(),
             "head": checksum(runs[-1] / "files.parquet"),
             "commits": len(runs),
-            "engine_matches": registration["engine_sha256"] == engine_digest(),
+            "registration_engine_sha256": registration["engine_sha256"],
+            "active_engine_sha256": pq.read_table(runs[-1] / "journal.parquet")["engine_sha256"][
+                0
+            ].as_py(),
+            "migrations": sum((r / "migration.parquet").exists() for r in runs),
+            "engine_matches": pq.read_table(runs[-1] / "journal.parquet")["engine_sha256"][
+                0
+            ].as_py()
+            == engine_digest(),
             "execution_basis": "delayed_daily_open_proxy",
         }
 
@@ -812,10 +821,23 @@ def verify_forward(account: Path) -> dict[str, Any]:
             0,
             {s: Account(ZERO) for s in plan.symbols},
         )
+        registration = pq.read_table(runs[0] / "registration.parquet").to_pylist()[0]
+        epoch = validate_versions(runs, registration["engine_sha256"])
+        if epoch:
+            boundary = pq.read_table(runs[epoch] / "migration.parquet").to_pylist()[0]
+            verify_archived(runs[:epoch], boundary["from_engine_sha256"])
+            replay = ForwardState.load(
+                {
+                    name: pq.read_table(runs[epoch] / f"{name}.parquet")
+                    for name in ("state", "ledgers", "pending")
+                }
+            )
         for i, run in enumerate(runs):
+            if i < epoch:
+                continue
             journal = pq.read_table(run / "journal.parquet").to_pylist()[0]
             expected = replay.tables()
-            if i:
+            if i > epoch:
                 kind, now = journal["kind"], journal["recorded_at"]
                 if kind == "daily":
                     inputs = _history(runs[: i + 1], plan.symbols)

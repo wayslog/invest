@@ -17,13 +17,26 @@ from invest.research_registry import parse_mappings
 
 
 def add_forward_commands(commands: Any) -> None:
-    for name in ["init", "run", "status", "verify", "control", "job", "backup", "restore"]:
+    for name in ["service", "health", "notify-test", "system-failure"]:
+        parser = commands.add_parser(f"forward-{name}", help=f"Forward operations: {name}")
+        parser.add_argument("--config", type=Path, required=True)
+    for name in [
+        "init",
+        "run",
+        "status",
+        "verify",
+        "control",
+        "job",
+        "backup",
+        "restore",
+        "migrate",
+    ]:
         parser = commands.add_parser(f"forward-{name}", help=f"Forward paper account: {name}")
         parser.add_argument("--account", type=Path, required=True)
         if name in {"init", "run"}:
             parser.add_argument("--input", action="append", required=True, help="SYMBOL=PATH")
             parser.add_argument("--issuer-source", type=Path)
-        if name in {"init", "run", "status", "control", "restore"}:
+        if name in {"init", "run", "status", "control", "restore", "migrate"}:
             parser.add_argument("--at", type=parse_as_of, help="Synthetic drills only")
         if name == "init":
             parser.add_argument("--config", type=Path, required=True, help="Observation TOML")
@@ -31,7 +44,7 @@ def add_forward_commands(commands: Any) -> None:
             parser.add_argument(
                 "--study", type=Path, help="Required for qualified_strategy and shadow_research"
             )
-        if name in {"control", "restore"}:
+        if name in {"control", "restore", "migrate"}:
             parser.add_argument("--actor", required=True)
             parser.add_argument("--reason", required=True)
         if name == "control":
@@ -49,9 +62,47 @@ def add_forward_commands(commands: Any) -> None:
         if name == "restore":
             parser.add_argument("--backup", type=Path, required=True)
             parser.add_argument("--expected-head", required=True)
+        if name == "migrate":
+            parser.add_argument(
+                "--backup", type=Path, required=True, help="New backup outside the account"
+            )
+            parser.add_argument("--expected-head", required=True)
+            parser.add_argument("--from-engine", required=True)
 
 
 def dispatch_forward(args: argparse.Namespace) -> dict[str, Any]:
+    if args.command in {
+        "forward-service",
+        "forward-health",
+        "forward-notify-test",
+        "forward-system-failure",
+    }:
+        from invest.forward_service import (
+            check_service,
+            notification_test,
+            run_service,
+            system_failure,
+        )
+
+        operation = {
+            "forward-service": run_service,
+            "forward-health": check_service,
+            "forward-notify-test": notification_test,
+            "forward-system-failure": system_failure,
+        }[args.command]
+        return operation(args.config)
+    if args.command == "forward-migrate":
+        from invest.forward_migration import migrate_forward
+
+        return migrate_forward(
+            args.account,
+            args.expected_head,
+            args.from_engine,
+            args.backup,
+            args.actor,
+            args.reason,
+            at=args.at,
+        )
     if args.command == "forward-init":
         location = init_forward(
             args.account,
