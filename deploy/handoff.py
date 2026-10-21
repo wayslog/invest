@@ -23,12 +23,86 @@ def quiet(command: list[str], data: bytes | None = None) -> bytes:
     return bytes(result.stdout)
 
 
+def encrypt_archive(archive: Path, certificate: Path, work: Path) -> bytes:
+    """Use signed-and-enveloped CMS, supported by the host's older OpenSSL."""
+    signer, key = work / "signer.pem", work / "signer.key"
+    signed, cipher = work / "account.signed", work / "account.cms"
+    quiet(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:3072",
+            "-nodes",
+            "-sha256",
+            "-days",
+            "2",
+            "-subj",
+            "/CN=invest-account-source",
+            "-keyout",
+            str(key),
+            "-out",
+            str(signer),
+        ]
+    )
+    key.chmod(0o600)
+    quiet(
+        [
+            "openssl",
+            "cms",
+            "-sign",
+            "-binary",
+            "-nodetach",
+            "-md",
+            "sha256",
+            "-in",
+            str(archive),
+            "-signer",
+            str(signer),
+            "-inkey",
+            str(key),
+            "-out",
+            str(signed),
+            "-outform",
+            "DER",
+        ]
+    )
+    quiet(
+        [
+            "openssl",
+            "cms",
+            "-encrypt",
+            "-binary",
+            "-aes-256-cbc",
+            "-recip",
+            str(certificate),
+            "-keyopt",
+            "rsa_padding_mode:oaep",
+            "-keyopt",
+            "rsa_oaep_md:sha256",
+            "-in",
+            str(signed),
+            "-out",
+            str(cipher),
+            "-outform",
+            "DER",
+        ]
+    )
+    return json.dumps(
+        {
+            "cms": base64.b64encode(cipher.read_bytes()).decode(),
+            "signer_certificate": signer.read_text(),
+        }
+    ).encode()
+
+
 def handoff(account: Path, certificate: Path, repository: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Invalid repository")
     with tempfile.TemporaryDirectory(prefix="invest-handoff-") as directory:
         work = Path(directory)
-        archive, cipher = work / "account.tar.gz", work / "account.cms"
+        archive = work / "account.tar.gz"
         quiet(["openssl", "x509", "-in", str(certificate), "-noout", "-checkend", "0"])
         quiet(
             [
@@ -39,28 +113,7 @@ def handoff(account: Path, certificate: Path, repository: str) -> str:
                 str(archive),
             ]
         )
-        quiet(
-            [
-                "openssl",
-                "cms",
-                "-encrypt",
-                "-binary",
-                "-aes-256-gcm",
-                "-recip",
-                str(certificate),
-                "-keyopt",
-                "rsa_padding_mode:oaep",
-                "-keyopt",
-                "rsa_oaep_md:sha256",
-                "-in",
-                str(archive),
-                "-out",
-                str(cipher),
-                "-outform",
-                "DER",
-            ]
-        )
-        encrypted = cipher.read_bytes()
+        encrypted = encrypt_archive(archive, certificate, work)
         request = json.dumps(
             {"encoding": "base64", "content": base64.b64encode(encrypted).decode()}
         ).encode()

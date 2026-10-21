@@ -71,10 +71,12 @@ GitHub 托管 runner 无法读取云工作区里未提交的私人文件，因�
      --recipient reports/deployments/handoff/handoff-recipient.pem
    ```
 
-3. 工具自动重放、打包原账户，用 AES-256-GCM 和 RSA-OAEP/SHA-256 加密，
-   仅把密文放入 GitHub Git blob 对象，再自动触发 `main` 的正式部署。
+3. 工具自动重放、打包原账户，先生成临时签名并用 SHA-256 签名，再用
+   AES-256-CBC 和 RSA-OAEP/SHA-256 封装为 CMS，以兼容主机 OpenSSL。
+   仅把密文及公开签名证书放入 GitHub Git blob 对象，再自动触发 `main` 的正式部署。
    `handoff_blob` 是工具自动填写的可选传输引用，常规部署留空，不要求手填账户 ID 或摘要。
-4. runner 核对密文对象，转交主机；主机验证密文、重放原日志后交接。
+4. runner 核对密文对象，通过带 SHA-256 校验的 SSH 包转交主机；主机解密、核对
+   固定签名证书及内容签名，再重放原日志后交接。签名证书由可信传输固定，不使用公共 CA。
    成功上线后删除临时解密私钥。GitHub 可能保留密文对象，但不会收到明文日志或解密私钥。
    激活失败时保留受保护密钥以便排查；原账户仍不能被替换或重开。
 

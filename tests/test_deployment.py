@@ -146,7 +146,13 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
     calls: list[str] = []
-    monkeypatch.setattr(runner, "download_handoff", lambda blob: b"authenticated ciphertext")
+    envelope = json.dumps(
+        {
+            "cms": base64.b64encode(b"signed and encrypted account").decode(),
+            "signer_certificate": "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+        }
+    ).encode()
+    monkeypatch.setattr(runner, "download_handoff", lambda blob: envelope)
 
     def fake_run(command: list[str], label: str, **kwargs: Any) -> None:
         calls.append(label)
@@ -180,7 +186,7 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
                 if with_account:
                     expected.add("account.tar.gz")
                 if with_handoff:
-                    expected.add("account.cms")
+                    expected.update({"account.cms", "account-signer.pem"})
                 assert set(archive.getnames()) == expected
                 runtime = archive.extractfile("invest.env")
                 assert runtime is not None and b"secret-market-value" in runtime.read()
@@ -249,30 +255,13 @@ def test_handoff_certificate_keeps_private_key_on_host_and_authenticates_ciphert
     assert prepare() == certificate  # A retry cannot rotate the recipient behind the sender.
     source = tmp_path / "account.tar.gz"
     source.write_bytes(b"private immutable account journal")
-    cipher = tmp_path / "account.cms"
-    subprocess.run(
-        [
-            "openssl",
-            "cms",
-            "-encrypt",
-            "-binary",
-            "-aes-256-gcm",
-            "-recip",
-            str(prefix / "bootstrap/handoff.pem"),
-            "-keyopt",
-            "rsa_padding_mode:oaep",
-            "-keyopt",
-            "rsa_oaep_md:sha256",
-            "-in",
-            str(source),
-            "-out",
-            str(cipher),
-            "-outform",
-            "DER",
-        ],
-        capture_output=True,
-        check=True,
+    envelope = json.loads(
+        handover.encrypt_archive(source, prefix / "bootstrap/handoff.pem", tmp_path)
     )
+    cipher = tmp_path / "account.cms"
+    assert cipher.read_bytes() == base64.b64decode(envelope["cms"])
+    signer = tmp_path / "signer.pem"
+    assert signer.read_text() == envelope["signer_certificate"]
     decrypt = [
         "openssl",
         "cms",
@@ -287,12 +276,30 @@ def test_handoff_certificate_keeps_private_key_on_host_and_authenticates_ciphert
         "-inkey",
         str(key),
     ]
-    plain = subprocess.run(decrypt, capture_output=True, check=True).stdout
+    signed = subprocess.run(decrypt, capture_output=True, check=True).stdout
+    verify = [
+        "openssl",
+        "cms",
+        "-verify",
+        "-binary",
+        "-inform",
+        "DER",
+        "-nointern",
+        "-certfile",
+        str(signer),
+        "-noverify",
+    ]
+    plain = subprocess.run(verify, input=signed, capture_output=True, check=True).stdout
     assert plain == source.read_bytes()
+    wrong_signer = verify.copy()
+    wrong_signer[wrong_signer.index("-certfile") + 1] = str(prefix / "bootstrap/handoff.pem")
+    assert subprocess.run(wrong_signer, input=signed, capture_output=True).returncode != 0
     content = bytearray(cipher.read_bytes())
-    content[-1] ^= 1
+    # Tamper with a CBC block while leaving padding intact: signature verification must fail.
+    content[-64] ^= 1
     cipher.write_bytes(content)
-    assert subprocess.run(decrypt, capture_output=True, check=False).returncode != 0
+    changed = subprocess.run(decrypt, capture_output=True, check=True).stdout
+    assert subprocess.run(verify, input=changed, capture_output=True).returncode != 0
     (prefix / "account").mkdir()
     refused = subprocess.run(["bash"], input=script.encode(), capture_output=True, check=False)
     assert refused.returncode != 0 and b"already has an account" in refused.stderr
@@ -312,9 +319,6 @@ def test_handoff_uploader_sends_only_ciphertext_and_automates_dispatch(
             path = Path(command[-1])
             path.write_bytes(b"private-account-journal")
             private_files.append(path)
-        elif "-encrypt" in command:
-            assert "-aes-256-gcm" in command and "rsa_padding_mode:oaep" in command
-            Path(command[command.index("-out") + 1]).write_bytes(encrypted)
         elif command[:2] == ["gh", "api"]:
             assert data is not None and b"private-account-journal" not in data
             request = json.loads(data)
@@ -323,6 +327,7 @@ def test_handoff_uploader_sends_only_ciphertext_and_automates_dispatch(
         return b""
 
     monkeypatch.setattr(handover, "quiet", fake_quiet)
+    monkeypatch.setattr(handover, "encrypt_archive", lambda *args: encrypted)
     assert handover.handoff(tmp_path / "account", tmp_path / "public.pem", "owner/invest") == blob
     assert commands[-1][-2:] == ["-f", f"handoff_blob={blob}"]
     assert "main" in commands[-1]

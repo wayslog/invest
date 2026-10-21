@@ -68,7 +68,7 @@ done
 install -d -m 0750 -o root -g invest /etc/invest
 export MPLCONFIGDIR=/var/lib/invest/cache/matplotlib
 account=/var/lib/invest/account
-bootstrap=0 encrypted_handoff=0
+bootstrap=0
 if [[ -e $account || -L $account ]]; then
   [[ -d $account/journal && ! -L $account ]] || fail 'Existing account path is invalid'
 else
@@ -80,10 +80,17 @@ else
       || fail 'Prepare the encrypted handover recipient first'
     openssl cms -decrypt -binary -inform DER -in "$incoming/account.cms" \
       -recip /opt/invest/bootstrap/handoff.pem -inkey /opt/invest/bootstrap/handoff.key \
-      -out "$incoming/account.tar.gz" >"$incoming/decrypt.log" 2>&1 \
+      -out "$incoming/account.signed" >"$incoming/decrypt.log" 2>&1 \
       || fail 'Encrypted account authentication failed'
+    [[ -f $incoming/account-signer.pem && ! -L $incoming/account-signer.pem ]] \
+      || fail 'The handover signer certificate is missing'
+    # The signer is pinned by the authenticated transfer, not by a public CA.
+    # noverify skips CA validation; nointern still enforces this exact signer and signature.
+    openssl cms -verify -binary -inform DER -in "$incoming/account.signed" \
+      -nointern -certfile "$incoming/account-signer.pem" -noverify \
+      -out "$incoming/account.tar.gz" >"$incoming/signature.log" 2>&1 \
+      || fail 'Account handover signature verification failed'
     chmod 0600 "$incoming/account.tar.gz"
-    encrypted_handoff=1
   fi
   archive=$incoming/account.tar.gz
   if [[ ! -f $archive ]]; then archive=/opt/invest/bootstrap/account.tar.gz; fi
@@ -143,7 +150,5 @@ phase=receipt
 runuser -u invest -- "$python" "$release/deploy/release.py" receipt "$account" "$account_id" "$expected_head" "$release" "$run"
 phase=enable_timers
 systemctl enable --now invest-forward.timer invest-forward-health.timer
-if (( encrypted_handoff )); then
-  # The transferred ciphertext is no longer decryptable with any long-lived SSH credential.
-  rm -f /opt/invest/bootstrap/handoff.key /opt/invest/bootstrap/handoff.pem
-fi
+# Also clean up a key retained by an earlier activation failure after a successful retry.
+rm -f /opt/invest/bootstrap/handoff.key /opt/invest/bootstrap/handoff.pem

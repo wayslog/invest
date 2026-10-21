@@ -235,7 +235,16 @@ def execute(
                 timeout=300,
             )
         if handoff_blob:
-            (payload / "account.cms").write_bytes(download_handoff(handoff_blob))
+            envelope = json.loads(download_handoff(handoff_blob))
+            signer = envelope["signer_certificate"]
+            if not isinstance(signer, str) or not re.fullmatch(
+                r"-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]+-----END CERTIFICATE-----\n?",
+                signer,
+            ):
+                raise ValueError("Invalid public handover signer")
+            (payload / "account-signer.pem").write_text(signer)
+            (payload / "account-signer.pem").chmod(0o600)
+            (payload / "account.cms").write_bytes(base64.b64decode(envelope["cms"], validate=True))
             (payload / "account.cms").chmod(0o600)
         bundle = work / "payload.tar.gz"
         with tarfile.open(bundle, "w:gz") as archive:

@@ -18,7 +18,7 @@ if [[ -e $key || -e $certificate || -L $key || -L $certificate ]]; then
   [[ -f $key && -f $certificate && ! -L $key && ! -L $certificate ]] \
     || fail 'Incomplete handover key material; inspect protected host files'
 else
-  # OAEP and authenticated AES-GCM are used by the client; no account or runtime secrets here.
+  # Signed-and-enveloped CMS uses OAEP; no account or runtime secrets are stored here.
   openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 2 \
     -subj /CN=invest-account-handoff -keyout "$key" -out "$certificate" \
     >"$directory/key-generation.log" 2>&1 \
