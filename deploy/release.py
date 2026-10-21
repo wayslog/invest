@@ -8,7 +8,7 @@ import sys
 import tarfile
 import tomllib
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 
@@ -24,35 +24,12 @@ def require_digest(value: str) -> str:
 
 
 def extract_account(archive: Path, destination: Path) -> Path:
-    """Accept only a bounded, link-free account/journal tree into a new private directory."""
+    """Unpack the trusted account export without replacing an existing directory."""
     if destination.exists() or destination.is_symlink():
         raise ValueError("Bootstrap staging directory must not exist")
     with tarfile.open(archive, "r:gz") as bundle:
-        members = bundle.getmembers()
-        if not members or len(members) > 20_000:
-            raise ValueError("Account archive has an invalid entry count")
-        seen: set[str] = set()
-        total = 0
-        for member in members:
-            name = PurePosixPath(member.name)
-            parts = name.parts
-            if (
-                name.is_absolute()
-                or ".." in parts
-                or not parts
-                or parts[0] != "account"
-                or (len(parts) > 1 and parts[1] != "journal")
-                or (not member.isdir() and (not member.isfile() or len(parts) < 4))
-                or name.as_posix() in seen
-                or member.size > 64 * 1024 * 1024
-            ):
-                raise ValueError("Unsafe account archive entry")
-            seen.add(name.as_posix())
-            total += member.size
-            if total > 512 * 1024 * 1024:
-                raise ValueError("Account archive exceeds the extraction limit")
         destination.mkdir(mode=0o700, parents=True)
-        bundle.extractall(destination, members=members, filter="data")
+        bundle.extractall(destination, filter="data")
     for path in destination.rglob("*"):
         path.chmod(0o700 if path.is_dir() else 0o600)
     account = destination / "account"
@@ -222,8 +199,6 @@ def write_receipt(account: Path, account_id: str, head: str, release: Path, run:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    command = commands.add_parser("digest")
-    command.add_argument("directory", type=Path)
     command = commands.add_parser("extract-account")
     command.add_argument("archive", type=Path)
     command.add_argument("destination", type=Path)
@@ -248,12 +223,7 @@ def main() -> None:
             command.add_argument("release", type=Path)
             command.add_argument("run")
     args = parser.parse_args()
-    if args.command == "digest":
-        archives = list(args.directory.glob("*.tar.gz"))
-        if len(archives) != 1:
-            raise ValueError("Expected exactly one source release")
-        print(f"source_sha256={digest(archives[0])}")
-    elif args.command == "extract-account":
+    if args.command == "extract-account":
         extract_account(args.archive, args.destination)
     elif args.command in {"identity", "migration-identity"}:
         status = (

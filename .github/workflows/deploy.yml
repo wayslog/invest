@@ -6,16 +6,8 @@ on:
       operation:
         description: First check connectivity, then deploy the tested main commit
         type: choice
-        options: [preflight, prepare-handoff, inspect, deploy, migrate]
+        options: [preflight, inspect, deploy, migrate]
         default: preflight
-      handoff_blob:
-        description: Optional encrypted first-handover object, populated by the deployment operator
-        type: string
-        default: ""
-      inspection_recipient:
-        description: Optional public certificate for encrypted runtime inspection
-        type: string
-        default: ""
       migration_reason:
         description: Required only for an explicitly requested cash-account engine migration
         type: string
@@ -64,33 +56,6 @@ jobs:
     if: inputs.operation == 'deploy' || inputs.operation == 'migrate'
     uses: ./.github/workflows/ci.yml
 
-  prepare-handoff:
-    needs: trusted-branch
-    if: inputs.operation == 'prepare-handoff'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Prepare a temporary public encryption certificate
-        env:
-          INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
-          INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
-          INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
-          INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
-        run: python deploy/github_actions.py prepare-handoff
-      - uses: actions/upload-artifact@v4
-        with:
-          name: handoff-recipient
-          path: handoff-recipient.pem
-          retention-days: 1
-          if-no-files-found: error
-
   deploy:
     needs: build
     runs-on: ubuntu-latest
@@ -117,14 +82,11 @@ jobs:
           APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
           INVEST_TELEGRAM_BOT_TOKEN: ${{ secrets.INVEST_TELEGRAM_BOT_TOKEN }}
           INVEST_TELEGRAM_ALLOWED_UID: ${{ secrets.INVEST_TELEGRAM_ALLOWED_UID }}
-          INVEST_RELEASE_SHA256: ${{ needs.build.outputs.source_sha256 }}
           INVEST_DEPLOY_COMMIT: ${{ github.sha }}
           INVEST_DEPLOY_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
-          INVEST_HANDOFF_BLOB: ${{ inputs.handoff_blob }}
-          GITHUB_TOKEN: ${{ github.token }}
           INVEST_OPERATION: ${{ inputs.operation }}
           INVEST_MIGRATION_REASON: ${{ inputs.migration_reason }}
-        run: python deploy/github_actions.py "$INVEST_OPERATION" --artifact release-artifact --handoff-blob "$INVEST_HANDOFF_BLOB"
+        run: python deploy/github_actions.py "$INVEST_OPERATION" --artifact release-artifact
 
   inspect:
     needs: trusted-branch
@@ -139,17 +101,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Encrypt private service receipts and diagnostics for the operator
+      - name: Show service, account and operations status
         env:
           INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
           INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
           INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
           INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
-          INVEST_INSPECTION_RECIPIENT: ${{ inputs.inspection_recipient }}
         run: python deploy/github_actions.py inspect
-      - uses: actions/upload-artifact@v4
-        with:
-          name: runtime-inspection-encrypted
-          path: runtime-inspection.cms
-          retention-days: 1
-          if-no-files-found: error

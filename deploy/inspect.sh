@@ -1,49 +1,43 @@
 #!/usr/bin/env bash
-# Public recipient certificate is prefixed by the caller. All host output is encrypted.
+# Read-only operational summary. Full account data and logs remain on the host.
 set -euo pipefail
-umask 077
-recipient_base64=${recipient_base64:?Public recipient certificate is required}
-work=$(mktemp -d /opt/invest/inspection.XXXXXXXX)
-trap 'rm -rf -- "$work"' EXIT
-printf '%s' "$recipient_base64" | base64 -d >"$work/recipient.pem"
-mkdir "$work/files"
-{ openssl version; uv --version; uname -sr; } >"$work/files/tools.txt" 2>&1
-if [[ -f /opt/invest/bootstrap/key-generation.log ]]; then
-  tail -n 30 /opt/invest/bootstrap/key-generation.log >"$work/files/key-generation.log"
-fi
+current=$(readlink -f /opt/invest/current)
+printf 'Release: %s\n' "${current##*/}"
 for unit in invest-forward.service invest-forward.timer invest-forward-health.service \
   invest-forward-health.timer invest-forward-notify-test.service invest-forward-failure.service; do
-  systemctl show "$unit" --property=Id,LoadState,ActiveState,UnitFileState,Result,ExecMainStatus,NextElapseUSecRealtime,LastTriggerUSec \
-    >"$work/files/$unit.txt" 2>&1 || true
+  systemctl show "$unit" --property=Id,LoadState,ActiveState,UnitFileState,Result,ExecMainStatus,NextElapseUSecRealtime,LastTriggerUSec
 done
-journalctl -u invest-forward.service -u invest-forward-health.service \
-  -u invest-forward-notify-test.service -u invest-forward-failure.service \
-  -n 120 --no-pager --output=short-iso >"$work/files/journal.txt" 2>&1 || true
-if [[ -d /opt/invest/deployment-logs ]]; then
-  while IFS= read -r log; do
-    name=$(basename "$(dirname "$log")")-$(basename "$log")
-    tail -n 100 "$log" >"$work/files/$name"
-  done < <(find /opt/invest/deployment-logs -mindepth 2 -maxdepth 2 -type f -name '*.log' | sort | tail -n 20)
-fi
-for directory in runs alerts health deployments; do
-  source=/var/lib/invest/operations/$directory
-  if [[ -d $source ]]; then
-    mkdir "$work/files/$directory"
-    while IFS= read -r record; do
-      cp -- "$record" "$work/files/$directory/"
-    done < <(find "$source" -maxdepth 1 -type f -name '*.parquet' | sort | tail -n 20)
-  fi
-done
-if [[ -x /opt/invest/current/.venv/bin/invest && -d /var/lib/invest/account/journal ]]; then
-  readlink -f /opt/invest/current >"$work/files/current.txt"
-  for operation in forward-status forward-verify; do
-    runuser -u invest -- env MPLCONFIGDIR=/var/lib/invest/cache/matplotlib \
-      /opt/invest/current/.venv/bin/invest "$operation" --account /var/lib/invest/account \
-      >"$work/files/$operation.json" 2>"$work/files/$operation.error" || true
-  done
-fi
-tar -czf "$work/private.tar.gz" -C "$work/files" .
-openssl cms -encrypt -binary -aes-256-cbc -recip "$work/recipient.pem" \
-  -keyopt rsa_padding_mode:oaep -keyopt rsa_oaep_md:sha256 -in "$work/private.tar.gz" \
-  -out "$work/status.cms" -outform DER 2>"$work/encryption.log"
-cat "$work/status.cms"
+runuser -u invest -- env MPLCONFIGDIR=/var/lib/invest/cache/matplotlib \
+  "$current/.venv/bin/python" - <<'PY'
+import json
+from pathlib import Path
+
+import pyarrow.parquet as pq
+
+from invest.forward import forward_status, verify_forward
+
+account = Path("/var/lib/invest/account")
+status = forward_status(account)
+summary = {key: status[key] for key in (
+    "mode", "operations", "risk_status", "engine_matches", "sessions", "missing_sessions",
+    "last_session",
+)}
+try:
+    verify_forward(account)
+    summary["accounting_verified"] = True
+except (OSError, ValueError):
+    summary["accounting_verified"] = False
+print("Account:", json.dumps(summary, default=str, sort_keys=True))
+for directory in ("runs", "alerts", "health", "deployments"):
+    records = sorted((account.parent / "operations" / directory).glob("*.parquet"))
+    if not records:
+        print(directory + ": no records")
+        continue
+    rows = [row for path in records[-20:] for row in pq.read_table(path).to_pylist()]
+    row = max(rows, key=lambda item: item.get("recorded_at", item.get("finished_at")))
+    fields = ("recorded_at", "started_at", "finished_at", "outcome", "healthy", "delivery",
+              "notification", "updated", "sessions", "missing_sessions", "reconciliation_checks",
+              "run", "commit")
+    print(directory + ":", json.dumps({key: row[key] for key in fields if key in row},
+                                     default=str, sort_keys=True))
+PY

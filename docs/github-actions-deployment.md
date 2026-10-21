@@ -32,7 +32,7 @@ Telegram 自检/故障通知、首个交易日采集、12 项对账及备份；�
 当前 Codex GitHub 集成读取 production secrets 列表返回 403，不能完整核实或管理凭据清单。
 SSH、行情读取和 Telegram 的实际送达已经验证；凭据清单 API 权限不影响这些运行证据。
 云工作区里已有的 Alpaca 环境变量不会自动同步成 GitHub secrets。
-账户 ID、日志 head 和账户包校验值由程序自动读取，不需要配置账户元数据。
+账户 ID 和日志 head 由程序自动读取，不需要配置账户元数据、签名证书或传输摘要。
 
 | Secret | 用途 |
 | --- | --- |
@@ -43,9 +43,8 @@ SSH、行情读取和 Telegram 的实际送达已经验证；凭据清单 API �
 
 Environment variables 可选 `INVEST_SSH_USER=root`、`INVEST_SSH_PORT=22`。
 当前安装器需要 root；常驻账户服务使用独立的 `invest` 用户。
-主机密钥由 SSH 首次连接时自动记录，无需配置 known_hosts。
-同一作业的预检、传输和部署共用该记录；后续连接的密钥若变化会拒绝。
-GitHub 托管 runner 每次创建新作业记录，不在作业间保存主机密钥，也不转发 SSH agent。
+按用户要求完全信任此主机，SSH 不检查或保存主机指纹；无需 known_hosts 配置。
+部署通过现有 SSH 私钥连接，不转发 SSH agent。账户包不再签名、加密封装或另行核对传输摘要。
 
 目标机须运行 systemd，具备同步时钟、uv 和常见系统工具，允许下载锁定依赖、Python、
 行情及访问 Telegram。uv 使用 `/opt/invest/python` 安装 Python 3.12，避免依赖 root HOME。
@@ -65,30 +64,12 @@ uv run --locked python deploy/release.py pack-account \
 ```
 
 一次性把该包通过可信 SSH 连接放到服务器固定路径，目录 0700、文件 0600、root 持有。
-已有本地账户的部署器也会自动打包并传输；自定义目录可用可选的 `--account` 参数指定。
+本地部署器可用 `--account` 指定待交接的账户，直接通过 SSH 打包传输。
 GitHub 托管 runner 无法读取云工作区里未提交的私人文件，因此首次仍需实际移交数据；
 账户包不作为额外 GitHub secret，不上传公开 artifact。
 
-源端无法直连 SSH 时，可以由 Actions 完成加密交接，无需新增 secret 或下载地址：
-
-1. 从 `main` 运行 `operation=prepare-handoff`。主机生成临时 RSA 3072 位密钥和公开证书，
-   私钥仅存于 root 可读的 `/opt/invest/bootstrap/handoff.key`；公开证书作为
-   `handoff-recipient` artifact 保存一天。此操作不改账户或启动服务；`preflight` 仍保持只读。
-2. 将该次可信 `main` 作业的公开证书下载到源端忽略目录，然后运行：
-
-   ```bash
-   uv run --locked python deploy/handoff.py \
-     --recipient reports/deployments/handoff/handoff-recipient.pem
-   ```
-
-3. 工具自动重放、打包原账户，先生成临时签名并用 SHA-256 签名，再用
-   AES-256-CBC 和 RSA-OAEP/SHA-256 封装为 CMS，以兼容主机 OpenSSL。
-   仅把密文及公开签名证书放入 GitHub Git blob 对象，再自动触发 `main` 的正式部署。
-   `handoff_blob` 是工具自动填写的可选传输引用，常规部署留空，不要求手填账户 ID 或摘要。
-4. runner 核对密文对象，通过带 SHA-256 校验的 SSH 包转交主机；主机解密、核对
-   固定签名证书及内容签名，再重放原日志后交接。签名证书由可信传输固定，不使用公共 CA。
-   成功上线后删除临时解密私钥。GitHub 可能保留密文对象，但不会收到明文日志或解密私钥。
-   激活失败时保留受保护密钥以便排查；原账户仍不能被替换或重开。
+当前原账户已完成交接。日常 Actions 部署直接沿用主机账户，不再经过 Git blob、
+临时密钥、证书或签名流程，也不需要上传账户包。首次移交其他主机时，通过 SSH 复制上述归档即可。
 
 程序完整重放账户日志并自动取得 ID/head；已有账户不会被包覆盖，也不会重新开户。
 首次交接后，Linux 主机成为唯一写入端，本地副本留作停止更新的存档。
@@ -100,7 +81,7 @@ GitHub 托管 runner 无法读取云工作区里未提交的私人文件，因�
 1. 选择 `main`、`operation=preflight`，检查 GitHub runner 的 SSH 连通性、
    root 权限、systemd、NTP 和 uv。预检成功只证明接入前提成立，不代表日结已部署。
 2. 选择 `operation=deploy`。没有账户元数据输入或首次交接确认框。
-3. 测试通过后，部署脚本核对构建包 SHA，在 `/opt/invest/releases/<完整Git提交>` 安装锁定环境。
+3. 测试通过后，部署脚本直接使用构建 job 的源码包，在 `/opt/invest/releases/<完整Git提交>` 安装锁定环境。
    同一个引擎可以有多个不同部署版本；发布身份使用 Git commit，避免脚本更新与引擎指纹混淆。
 4. 停止两个 timer，等待已有服务自然结束，再自动读取服务器账户的最新 ID/head，验证日志并备份。
    等待期间正常完成的日结无需人工处理。部署内部继续核对后续 head，拒绝并发替换账户、
@@ -110,6 +91,7 @@ GitHub 托管 runner 无法读取云工作区里未提交的私人文件，因�
 
 成功凭据在 `/var/lib/invest/operations/deployments/<run-id>-<attempt>.parquet`，
 记录 Git commit、源码/引擎 SHA、账户 ID、交接 head、首轮日结后 head 和权威路径。
+源码 SHA 仅作自动记录，不作为部署门禁；账户引擎绑定和资金对账继续按原逻辑运行。
 这些私人数据不进入 Actions 日志或 artifacts。Actions 只上传经过测试的公开源码包。
 
 ## 失败与升级
@@ -124,11 +106,9 @@ GitHub runner 同样可能被目标机网络或防火墙拒绝；Actions 迁移�
 runner/主机私有暂存包在作业结束时清理；若 SSH 中断导致清理失败，检查
 `/opt/invest/incoming/` 并清理遗留文件。
 
-源端不能直连 SSH 时，可从 `main` 执行 `operation=inspect`，把操作者本地生成的
-RSA 公开证书放入 `inspection_recipient`。主机将服务状态、最近的运行/告警/部署
-Parquet 凭据及诊断日志加密后作为 `runtime-inspection-encrypted` artifact 保存一天。
-解密私钥只留在操作者本地；不导出 EnvironmentFile，不将账户状态或服务日志明文写入 Actions。
-此操作只读账户，不运行日结或修改定时器。
+从 `main` 执行 `operation=inspect` 即可查看服务、定时器、账户运行状态及最新运行/告警摘要，
+不需要证书、额外输入或下载解密。原始账户、完整日志及 Parquet 记录继续保存在主机，
+Actions 仅显示运行摘要。此操作只读账户，不运行日结或修改定时器。
 
 普通 `operation=deploy` 只接受**账户引擎指纹不变**的更新，仍拒绝版本不匹配或暂停账户。
 明确需要切换引擎时，可选择 `operation=migrate` 并填写 `migration_reason`，不需要额外 secret

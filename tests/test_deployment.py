@@ -1,7 +1,5 @@
-"""Offline deployment gates: identity, unsafe archives, private transport and redaction."""
+"""Account continuity, trusted-host deployment, private transport and redaction."""
 
-import base64
-import hashlib
 import importlib.util
 import io
 import json
@@ -30,7 +28,6 @@ def load_tool(filename: str) -> ModuleType:
 
 release = load_tool("release")
 runner = load_tool("github_actions")
-handover = load_tool("handoff")
 
 
 def bundle(tmp_path: Path, members: list[tarfile.TarInfo]) -> Path:
@@ -55,38 +52,6 @@ def test_account_archive_round_trip_is_private_and_exclusive(tmp_path: Path) -> 
     with pytest.raises(ValueError, match="must not exist"):
         release.extract_account(archive, destination)
     assert record.read_bytes() == b"xxxxxxxx"
-
-
-@pytest.mark.parametrize(
-    ("name", "kind"),
-    [
-        ("/account/journal/00000000/x", tarfile.REGTYPE),
-        ("account/journal/../../escape", tarfile.REGTYPE),
-        ("account/invest.env", tarfile.REGTYPE),
-        ("account/journal/00000000/link", tarfile.SYMTYPE),
-        ("account/journal/00000000/link", tarfile.LNKTYPE),
-        ("account/journal/00000000/pipe", tarfile.FIFOTYPE),
-    ],
-)
-def test_unsafe_account_archive_is_rejected_before_extraction(
-    tmp_path: Path, name: str, kind: bytes
-) -> None:
-    entry = tarfile.TarInfo(name)
-    entry.type = kind
-    entry.linkname = "../../outside"
-    archive = bundle(tmp_path, [entry])
-    destination = tmp_path / "new"
-    with pytest.raises(ValueError, match="Unsafe"):
-        release.extract_account(archive, destination)
-    assert not destination.exists()
-
-
-def test_duplicate_archive_paths_are_rejected(tmp_path: Path) -> None:
-    entry = tarfile.TarInfo("account/journal/00000000/x")
-    archive = bundle(tmp_path, [entry, entry])
-    with pytest.raises(ValueError, match="Unsafe"):
-        release.extract_account(archive, tmp_path / "new")
-    assert not (tmp_path / "new").exists()
 
 
 @pytest.mark.parametrize(
@@ -209,15 +174,14 @@ def test_explicit_migration_reads_private_request_and_checks_capital_equivalence
 
 
 @pytest.mark.parametrize(
-    ("with_account", "with_handoff", "with_migration"),
-    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
+    ("with_account", "with_migration"),
+    [(False, False), (True, False), (False, True)],
 )
-def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_payload(
+def test_ssh_transport_trusts_host_and_keeps_secrets_in_private_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     with_account: bool,
-    with_handoff: bool,
     with_migration: bool,
 ) -> None:
     artifact = tmp_path / "artifact"
@@ -231,7 +195,6 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
         "INVEST_SSH_PRIVATE_KEY": "private-key-material",
         "INVEST_DEPLOY_COMMIT": "c" * 40,
         "INVEST_DEPLOY_RUN": "123-1",
-        "INVEST_RELEASE_SHA256": hashlib.sha256(source.read_bytes()).hexdigest(),
         "APCA_API_KEY_ID": "secret-market-key",
         "APCA_API_SECRET_KEY": "secret-market-value",
         "INVEST_TELEGRAM_BOT_TOKEN": "123:secret-bot-token",
@@ -242,13 +205,6 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
     calls: list[str] = []
-    envelope = json.dumps(
-        {
-            "cms": base64.b64encode(b"signed and encrypted account").decode(),
-            "signer_certificate": "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
-        }
-    ).encode()
-    monkeypatch.setattr(runner, "download_handoff", lambda blob: envelope)
 
     def fake_run(command: list[str], label: str, **kwargs: Any) -> None:
         calls.append(label)
@@ -256,22 +212,10 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
             assert command[2] == "pack-account"
             Path(command[-1]).write_bytes(b"private account bytes")
             return
-        assert "StrictHostKeyChecking=accept-new" in command
+        assert "StrictHostKeyChecking=no" in command
+        assert "UserKnownHostsFile=/dev/null" in command
         assert "GlobalKnownHostsFile=/dev/null" in command
         assert "ForwardAgent=no" in command and "BatchMode=yes" in command
-        hosts = Path(
-            next(
-                value.split("=", 1)[1]
-                for value in command
-                if value.startswith("UserKnownHostsFile=")
-            )
-        )
-        assert hosts.stat().st_mode & 0o777 == 0o600
-        if label == "Host preflight":
-            assert hosts.read_text() == ""
-            hosts.write_text("automatically recorded host key")
-        else:
-            assert hosts.read_text() == "automatically recorded host key"
         key = Path(command[command.index("-i") + 1])
         assert key.stat().st_mode & 0o777 == 0o600
         assert key.read_text().strip() == "private-key-material"
@@ -281,8 +225,6 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
                 expected = {"source.tar.gz", "invest.env"}
                 if with_account:
                     expected.add("account.tar.gz")
-                if with_handoff:
-                    expected.update({"account.cms", "account-signer.pem"})
                 if with_migration:
                     expected.add("migration.toml")
                 assert set(archive.getnames()) == expected
@@ -290,6 +232,7 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
                 assert runtime is not None and b"secret-market-value" in runtime.read()
         if label == "Apply deployment":
             assert kwargs["data"].startswith(b"#!/usr/bin/env bash")
+            assert command[-1] == "bash -s -- /opt/invest/incoming/123-1 " + "c" * 40 + " 123-1"
             raise RuntimeError("simulated deployment failure")
 
     monkeypatch.setattr(runner, "run_quiet", fake_run)
@@ -298,150 +241,19 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
             "migrate" if with_migration else "deploy",
             artifact,
             tmp_path / "existing-account" if with_account else None,
-            "d" * 40 if with_handoff else "",
         )
     assert calls[-1] == "Clean private staging"
     output = capsys.readouterr()
     assert "secret" not in output.out + output.err
 
 
-def test_handoff_download_checks_object_identity_without_leaking_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    data = b"encrypted private account"
-    blob = hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
-    record = {"encoding": "base64", "content": base64.b64encode(data).decode()}
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/invest")
-    monkeypatch.setenv("GITHUB_TOKEN", "private-api-token")
-
-    class Opener:
-        def open(self, request: Any, timeout: int) -> io.BytesIO:
-            assert request.full_url == f"https://api.github.com/repos/owner/invest/git/blobs/{blob}"
-            assert request.headers["Authorization"] == "Bearer private-api-token"
-            assert timeout == 30
-            return io.BytesIO(json.dumps(record).encode())
-
-    monkeypatch.setattr(runner, "build_opener", lambda *args: Opener())
-    assert runner.download_handoff(blob) == data
-    record["content"] = base64.b64encode(b"changed ciphertext").decode()
-    with pytest.raises(ValueError, match="object changed"):
-        runner.download_handoff(blob)
-    with pytest.raises(ValueError, match="Invalid encrypted"):
-        runner.download_handoff("../other")
-    assert runner.NoRedirect().redirect_request(None) is None
-
-
-def test_handoff_certificate_keeps_private_key_on_host_and_authenticates_ciphertext(
-    tmp_path: Path,
-) -> None:
-    prefix = tmp_path / "host"
-    prefix.mkdir()
-    script = (ROOT / "deploy/prepare-handoff.sh").read_text()
-    script = script.replace("$(id -u)", "0").replace("/opt/invest", str(prefix))
-    script = script.replace("/var/lib/invest/account", str(prefix / "account"))
-
-    def prepare() -> bytes:
-        return subprocess.run(
-            ["bash"], input=script.encode(), capture_output=True, check=True
-        ).stdout
-
-    certificate = prepare()
-    key = prefix / "bootstrap/handoff.key"
-    assert key.stat().st_mode & 0o777 == 0o600
-    assert certificate.startswith(b"-----BEGIN CERTIFICATE-----")
-    assert b"PRIVATE KEY" not in certificate
-    assert prepare() == certificate  # A retry cannot rotate the recipient behind the sender.
-    source = tmp_path / "account.tar.gz"
-    source.write_bytes(b"private immutable account journal")
-    envelope = json.loads(
-        handover.encrypt_archive(source, prefix / "bootstrap/handoff.pem", tmp_path)
-    )
-    cipher = tmp_path / "account.cms"
-    assert cipher.read_bytes() == base64.b64decode(envelope["cms"])
-    signer = tmp_path / "signer.pem"
-    assert signer.read_text() == envelope["signer_certificate"]
-    decrypt = [
-        "openssl",
-        "cms",
-        "-decrypt",
-        "-binary",
-        "-inform",
-        "DER",
-        "-in",
-        str(cipher),
-        "-recip",
-        str(prefix / "bootstrap/handoff.pem"),
-        "-inkey",
-        str(key),
-    ]
-    signed = subprocess.run(decrypt, capture_output=True, check=True).stdout
-    verify = [
-        "openssl",
-        "cms",
-        "-verify",
-        "-binary",
-        "-inform",
-        "DER",
-        "-nointern",
-        "-certfile",
-        str(signer),
-        "-noverify",
-    ]
-    plain = subprocess.run(verify, input=signed, capture_output=True, check=True).stdout
-    assert plain == source.read_bytes()
-    wrong_signer = verify.copy()
-    wrong_signer[wrong_signer.index("-certfile") + 1] = str(prefix / "bootstrap/handoff.pem")
-    assert subprocess.run(wrong_signer, input=signed, capture_output=True).returncode != 0
-    content = bytearray(cipher.read_bytes())
-    # Tamper with a CBC block while leaving padding intact: signature verification must fail.
-    content[-64] ^= 1
-    cipher.write_bytes(content)
-    changed = subprocess.run(decrypt, capture_output=True, check=True).stdout
-    assert subprocess.run(verify, input=changed, capture_output=True).returncode != 0
-    (prefix / "account").mkdir()
-    refused = subprocess.run(["bash"], input=script.encode(), capture_output=True, check=False)
-    assert refused.returncode != 0 and b"already has an account" in refused.stderr
-
-
-def test_handoff_uploader_sends_only_ciphertext_and_automates_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    commands: list[list[str]] = []
-    private_files: list[Path] = []
-    encrypted = b"authenticated ciphertext"
-    blob = hashlib.sha1(f"blob {len(encrypted)}\0".encode() + encrypted).hexdigest()
-
-    def fake_quiet(command: list[str], data: bytes | None = None) -> bytes:
-        commands.append(command)
-        if "pack-account" in command:
-            path = Path(command[-1])
-            path.write_bytes(b"private-account-journal")
-            private_files.append(path)
-        elif command[:2] == ["gh", "api"]:
-            assert data is not None and b"private-account-journal" not in data
-            request = json.loads(data)
-            assert base64.b64decode(request["content"]) == encrypted
-            return json.dumps({"sha": blob}).encode()
-        return b""
-
-    monkeypatch.setattr(handover, "quiet", fake_quiet)
-    monkeypatch.setattr(handover, "encrypt_archive", lambda *args: encrypted)
-    assert handover.handoff(tmp_path / "account", tmp_path / "public.pem", "owner/invest") == blob
-    assert commands[-1][-2:] == ["-f", f"handoff_blob={blob}"]
-    assert "main" in commands[-1]
-    assert private_files and all(not path.exists() for path in private_files)
-
-
-def test_runtime_inspection_never_prints_or_exports_plain_private_output(
+def test_runtime_inspection_needs_no_certificate_or_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
     for name, value in {
         "INVEST_SSH_HOST": "host.example",
         "INVEST_SSH_PRIVATE_KEY": "private-ssh-key",
-        "INVEST_INSPECTION_RECIPIENT": (
-            "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----"
-        ),
     }.items():
         monkeypatch.setenv(name, value)
 
@@ -449,18 +261,74 @@ def test_runtime_inspection_never_prints_or_exports_plain_private_output(
         assert "private-ssh-key" not in " ".join(command)
         assert b"private-ssh-key" not in kwargs["data"]
         if label == "Inspect deployed runtime":
-            assert kwargs["data"].startswith(b"recipient_base64=")
-            return b"encrypted runtime receipts"
+            assert kwargs["data"] == (ROOT / "deploy/inspect.sh").read_bytes()
+            return b"Account: active; sessions=1; missing_sessions=0\n"
         return b""
 
     monkeypatch.setattr(runner, "run_quiet", fake_run)
     runner.execute("inspect", None)
-    artifact = tmp_path / "runtime-inspection.cms"
-    assert artifact.read_bytes() == b"encrypted runtime receipts"
-    assert artifact.stat().st_mode & 0o777 == 0o600
+    assert list(tmp_path.iterdir()) == []
     output = capsys.readouterr()
     assert "private-ssh-key" not in output.out + output.err
-    assert "encrypted runtime receipts" not in output.out + output.err
+    assert "Account: active; sessions=1; missing_sessions=0" in output.out
+
+
+def test_inspection_summarizes_actual_receipt_schemas_without_exporting_account_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from invest.forward_service import ALERT_SCHEMA, SERVICE_SCHEMA
+
+    account = tmp_path / "account"
+    operations = tmp_path / "operations"
+    for name in ("runs", "alerts", "health", "deployments"):
+        (operations / name).mkdir(parents=True)
+    stamp = pa.scalar("2026-10-21T11:30:00+00:00").cast(pa.timestamp("us", tz="UTC")).as_py()
+    run = {
+        "finished_at": stamp,
+        "outcome": "ok",
+        "sessions": 1,
+        "missing_sessions": 0,
+        "account_id": "private-account",
+        "head": "private-head",
+        "error": "private-log",
+    }
+    pq.write_table(
+        pa.Table.from_pylist([run], schema=SERVICE_SCHEMA), operations / "runs/0.parquet"
+    )
+    alert = {"recorded_at": stamp, "delivery": "sent", "detail": "private-message"}
+    pq.write_table(
+        pa.Table.from_pylist([alert], schema=ALERT_SCHEMA), operations / "alerts/0.parquet"
+    )
+    pq.write_table(
+        pa.Table.from_pylist([{"recorded_at": stamp, "healthy": True}]),
+        operations / "health/0.parquet",
+    )
+    status = {
+        "mode": "cash_observation",
+        "operations": "active",
+        "risk_status": "active",
+        "engine_matches": True,
+        "sessions": 1,
+        "missing_sessions": 0,
+        "last_session": "2026-10-20",
+        "account_id": "private-account",
+        "cash": "5000",
+    }
+    monkeypatch.setattr("invest.forward.forward_status", lambda path: status)
+    monkeypatch.setattr("invest.forward.verify_forward", lambda path: {"head": "private-head"})
+    script = (ROOT / "deploy/inspect.sh").read_text().split("<<'PY'\n", 1)[1].removesuffix("PY\n")
+    script = script.replace("/var/lib/invest/account", str(account))
+    exec(compile(script, "inspect.sh", "exec"), {})
+    output = capsys.readouterr().out
+    assert '"accounting_verified": true' in output
+    assert '"outcome": "ok"' in output
+    assert '"delivery": "sent"' in output
+    assert '"healthy": true' in output
+    assert "deployments: no records" in output
+    assert "private-" not in output and "5000" not in output
 
 
 def test_transport_errors_and_timeouts_do_not_disclose_command_or_output(
@@ -541,8 +409,8 @@ def test_host_deployment_preserves_account_and_controls_timers_on_failure(
                 entry = tarfile.TarInfo("project/" + name)
                 entry.mode, entry.size = 0o644, len(content)
                 archive.addfile(entry, io.BytesIO(content))
-    source_sha = release.digest(source)
-    (release_dir / ".source-sha256").write_text(source_sha)
+    # Existing releases are trusted, without comparing the incoming archive digest.
+    (release_dir / ".source-sha256").write_text("previously recorded provenance")
     if failure == "fresh":
         shutil.rmtree(release_dir)
     payload = incoming / "payload.tar.gz"
@@ -666,8 +534,6 @@ else:
             "bash",
             str(script_path),
             str(incoming),
-            release.digest(payload),
-            source_sha,
             "c" * 40,
             "123-1",
         ],

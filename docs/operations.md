@@ -69,7 +69,7 @@ uv run --locked invest forward-control --account reports/m3-cash-account \
 
 服务使用无交互登录权限的 `invest` 用户，代码与系统目录只读，只有持久化目录允许写入。
 SSH 地址和实际凭据保存在本地忽略的部署记录/安全环境中，不写入公开仓库。
-Actions 首次连接时自动记录主机密钥，无需单独配置 known_hosts。
+完全信任已配置的主机；Actions 不检查或保存主机指纹，无需 known_hosts。
 私钥变量为 `INVEST_SSH_PRIVATE_KEY` 或 `INVEST_SSH_KEY_FILE`；连接时不转发 SSH agent。
 
 ## 凭据与 Telegram
@@ -99,7 +99,7 @@ Python 能捕获的错误会保存运行失败记录并通知；systemd 的超�
 在版本目录运行 `uv sync --locked --no-dev --python 3.12`。
 
 迁移后的账户先停止源端写入，再按原字节移交。目标账户目录必须不存在；
-解包到暂存目录，核对传输清单、相同 head、账户 ID 与新引擎复核后再发布。
+通过 SSH 直接复制归档并解包到暂存目录；沿用同一账户与历史，无需签名证书或传输摘要。
 不能覆盖服务器已有账户，也不能同时启用云工作区与服务器两份写入进程。
 首次交接记录须保存权威主机、路径、源/目标 head 和校验结果。
 

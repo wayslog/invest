@@ -2,13 +2,10 @@
 # Invoked through SSH by the trusted workflow. No secrets in argv or stdout.
 set -euo pipefail
 umask 077
-incoming=${1:?} payload_sha=${2:?} source_sha=${3:?} commit=${4:?} run=${5:?}
+incoming=${1:?} commit=${2:?} run=${3:?}
 fail() { echo "DEPLOY_ERROR: $1" >&2; exit 1; }
 [[ $incoming =~ ^/opt/invest/incoming/[0-9]+-[0-9]+$ && $run =~ ^[0-9]+-[0-9]+$ ]] || fail 'Invalid staging path'
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || fail 'Invalid deployment identity'
-for value in "$payload_sha" "$source_sha"; do
-  [[ $value =~ ^[0-9a-f]{64}$ ]] || fail 'Invalid deployment checksum'
-done
 [[ $(id -u) == 0 && -d $incoming && ! -L $incoming ]] || fail 'Invalid deployment staging directory'
 install -d -m 0755 /opt/invest/releases
 exec 9>/opt/invest/.deployment.lock
@@ -39,15 +36,11 @@ finish() {
 }
 trap finish EXIT
 trap 'exit 1' HUP INT TERM
-[[ $(sha256sum "$incoming/payload.tar.gz" | cut -d' ' -f1) == "$payload_sha" ]] || fail 'Payload checksum mismatch'
+# Trust the host and the SSH transfer; no signing or transport checksum gate.
 tar --no-same-owner -xzf "$incoming/payload.tar.gz" -C "$incoming"
-[[ $(sha256sum "$incoming/source.tar.gz" | cut -d' ' -f1) == "$source_sha" ]] || fail 'Source checksum mismatch'
 release=/opt/invest/releases/$commit
-if [[ -e $release || -L $release ]]; then
-  [[ -f $release/.source-sha256 && ! -L $release ]] || fail 'Existing release is incomplete; inspect before retrying'
-  [[ $(cat "$release/.source-sha256") == "$source_sha" ]] || fail 'Immutable release checksum mismatch'
-else
-  mkdir -m 0755 "$release"
+if [[ ! -d $release/.venv ]]; then
+  install -d -m 0755 "$release"
   # The code is public. Private staging's umask must not hide implicit tar directories
   # from the unprivileged service user (sdists do not contain directory entries).
   (umask 022; tar --no-same-owner -xzf "$incoming/source.tar.gz" --strip-components=1 -C "$release")
@@ -55,7 +48,10 @@ else
   export UV_PYTHON_INSTALL_DIR=/opt/invest/python UV_CACHE_DIR=/opt/invest/uv-cache
   (umask 022; cd "$release" && uv sync --locked --no-dev --python 3.12 --managed-python) >"$incoming/install.log" 2>&1
   chmod 0755 "$release"
-  printf '%s\n' "$source_sha" >"$release/.source-sha256"
+fi
+# Record source provenance for the deployment receipt; it does not gate installation.
+if [[ ! -f $release/.source-sha256 ]]; then
+  sha256sum "$incoming/source.tar.gz" | cut -d' ' -f1 >"$release/.source-sha256"
   chmod 0644 "$release/.source-sha256"
 fi
 python=$release/.venv/bin/python
@@ -82,24 +78,6 @@ else
   (( migration == 0 )) || fail 'Migration requires an existing authoritative host account'
   bootstrap=1
   phase=verify_bootstrap
-  if [[ -f $incoming/account.cms ]]; then
-    [[ -f /opt/invest/bootstrap/handoff.key && ! -L /opt/invest/bootstrap/handoff.key \
-      && -f /opt/invest/bootstrap/handoff.pem && ! -L /opt/invest/bootstrap/handoff.pem ]] \
-      || fail 'Prepare the encrypted handover recipient first'
-    openssl cms -decrypt -binary -inform DER -in "$incoming/account.cms" \
-      -recip /opt/invest/bootstrap/handoff.pem -inkey /opt/invest/bootstrap/handoff.key \
-      -out "$incoming/account.signed" >"$incoming/decrypt.log" 2>&1 \
-      || fail 'Encrypted account authentication failed'
-    [[ -f $incoming/account-signer.pem && ! -L $incoming/account-signer.pem ]] \
-      || fail 'The handover signer certificate is missing'
-    # The signer is pinned by the authenticated transfer, not by a public CA.
-    # noverify skips CA validation; nointern still enforces this exact signer and signature.
-    openssl cms -verify -binary -inform DER -in "$incoming/account.signed" \
-      -nointern -certfile "$incoming/account-signer.pem" -noverify \
-      -out "$incoming/account.tar.gz" >"$incoming/signature.log" 2>&1 \
-      || fail 'Account handover signature verification failed'
-    chmod 0600 "$incoming/account.tar.gz"
-  fi
   archive=$incoming/account.tar.gz
   if [[ ! -f $archive ]]; then archive=/opt/invest/bootstrap/account.tar.gz; fi
   [[ -f $archive && ! -L $archive ]] || fail 'Supply the private existing account archive before handover'
@@ -172,5 +150,3 @@ phase=receipt
 runuser -u invest -- "$python" "$release/deploy/release.py" receipt "$account" "$account_id" "$handover_head" "$release" "$run"
 phase=enable_timers
 systemctl enable --now invest-forward.timer invest-forward-health.timer
-# Also clean up a key retained by an earlier activation failure after a successful retry.
-rm -f /opt/invest/bootstrap/handoff.key /opt/invest/bootstrap/handoff.pem
