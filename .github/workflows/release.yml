@@ -116,6 +116,9 @@ jobs:
                        for path in (source, wheel)}
           def api(path):
               return json.loads(subprocess.check_output(['gh', 'api', path]))
+          refs = api(f'repos/{repo}/git/matching-refs/tags/{tag}')
+          if any(item['ref'] == 'refs/tags/' + tag for item in refs):
+              assert api(f'repos/{repo}/commits/{tag}')['sha'] == commit, 'Existing tag differs from the deployed commit'
           releases = api(f'repos/{repo}/releases?per_page=100')
           existing = next((item for item in releases if item['tag_name'] == tag), None)
           common = ['--repo', repo]
