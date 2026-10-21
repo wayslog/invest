@@ -19,9 +19,10 @@ if [[ -e $key || -e $certificate || -L $key || -L $certificate ]]; then
     || fail 'Incomplete handover key material; inspect protected host files'
 else
   # OAEP and authenticated AES-GCM are used by the client; no account or runtime secrets here.
-  openssl req -x509 -newkey rsa:3072 -noenc -sha256 -days 2 \
+  openssl req -x509 -newkey rsa:3072 -nodes -sha256 -days 2 \
     -subj /CN=invest-account-handoff -keyout "$key" -out "$certificate" \
-    >"$directory/key-generation.log" 2>&1
+    >"$directory/key-generation.log" 2>&1 \
+    || fail 'Handover certificate generation failed; inspect protected host logs'
 fi
 chmod 0600 "$key" "$certificate"
 openssl x509 -in "$certificate" -noout -checkend 0 >/dev/null \

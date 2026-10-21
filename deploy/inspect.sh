@@ -7,6 +7,10 @@ work=$(mktemp -d /opt/invest/inspection.XXXXXXXX)
 trap 'rm -rf -- "$work"' EXIT
 printf '%s' "$recipient_base64" | base64 -d >"$work/recipient.pem"
 mkdir "$work/files"
+{ openssl version; uv --version; uname -sr; } >"$work/files/tools.txt" 2>&1
+if [[ -f /opt/invest/bootstrap/key-generation.log ]]; then
+  tail -n 30 /opt/invest/bootstrap/key-generation.log >"$work/files/key-generation.log"
+fi
 for unit in invest-forward.service invest-forward.timer invest-forward-health.service \
   invest-forward-health.timer invest-forward-notify-test.service invest-forward-failure.service; do
   systemctl show "$unit" --property=Id,LoadState,ActiveState,UnitFileState,Result,ExecMainStatus,NextElapseUSecRealtime,LastTriggerUSec \
