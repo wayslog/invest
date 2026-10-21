@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -394,7 +395,7 @@ def test_environment_file_cannot_inject_more_variables(monkeypatch: pytest.Monke
         runner.runtime_environment()
 
 
-@pytest.mark.parametrize("failure", ["verify", "handover", "changed", "activate", "none"])
+@pytest.mark.parametrize("failure", ["verify", "handover", "changed", "activate", "none", "fresh"])
 def test_host_deployment_preserves_account_and_controls_timers_on_failure(
     tmp_path: Path,
     failure: str,
@@ -414,6 +415,9 @@ def test_host_deployment_preserves_account_and_controls_timers_on_failure(
     incoming.mkdir(parents=True)
     (release_dir / ".venv/bin").mkdir(parents=True)
     (release_dir / "deploy").mkdir()
+    (release_dir / "deploy").chmod(0o755)
+    (release_dir / "deploy/release.py").write_text("public deployment code")
+    (release_dir / "deploy/release.py").chmod(0o644)
     managed_python = prefix / "python/bin/python"
     managed_python.parent.mkdir(parents=True)
     managed_python.write_text("not executed; privilege boundary is mocked")
@@ -423,8 +427,24 @@ def test_host_deployment_preserves_account_and_controls_timers_on_failure(
     )
     source = incoming / "source.tar.gz"
     source.write_bytes(b"tested source already installed in immutable release cache")
+    if failure == "fresh":
+        # Hatch sdists omit directory entries. Extraction must give the service access
+        # to directories created implicitly, despite the surrounding private umask.
+        with tarfile.open(source, "w:gz") as archive:
+            for name, content in {
+                "deploy/release.py": b"public deployment code",
+                "src/invest/__init__.py": b"public engine code",
+                "deploy/install-systemd.sh": (
+                    release_dir / "deploy/install-systemd.sh"
+                ).read_bytes(),
+            }.items():
+                entry = tarfile.TarInfo("project/" + name)
+                entry.mode, entry.size = 0o644, len(content)
+                archive.addfile(entry, io.BytesIO(content))
     source_sha = release.digest(source)
     (release_dir / ".source-sha256").write_text(source_sha)
+    if failure == "fresh":
+        shutil.rmtree(release_dir)
     payload = incoming / "payload.tar.gz"
     with tarfile.open(payload, "w:gz") as archive:
         archive.add(source, arcname="source.tar.gz")
@@ -465,7 +485,11 @@ elif name == "install":
     sys.exit(subprocess.call(["/usr/bin/install", *filtered]))
 elif name == "runuser":
     command = args[args.index("--") + 1:]
-    if "identity" in command:
+    if command[:2] == ["test", "-r"]:
+        path = Path(command[-1])
+        assert path.stat().st_mode & 0o004, "Service must be able to read public code"
+        assert path.parent.stat().st_mode & 0o001, "Implicit source directories must be traversable"
+    elif "identity" in command:
         assert not state["active"], "Metadata must be discovered after quiescence"
         log("identity")
         if os.environ["HOST_FAILURE"] == "verify":
@@ -486,6 +510,11 @@ elif name == "runuser":
             state_path.write_text(json.dumps(state))
     elif "receipt" in command:
         log("receipt")
+elif name == "uv":
+    Path(".venv/bin").mkdir(parents=True)
+    Path(".venv/bin/python").symlink_to(os.environ["HOST_MANAGED_PYTHON"])
+elif name == "chown":
+    pass
 elif name == "systemctl":
     log("systemctl " + " ".join(args))
     if args[0] == "is-active":
@@ -504,7 +533,7 @@ else:
 """
     )
     mock.chmod(0o755)
-    for name in ("id", "install", "runuser", "systemctl"):
+    for name in ("id", "install", "runuser", "systemctl", "uv", "chown"):
         (tools / name).symlink_to(mock)
     script = (ROOT / "deploy/apply.sh").read_text()
     for directory in ("/opt/invest", "/var/lib/invest", "/etc/invest"):
@@ -517,6 +546,7 @@ else:
         "HOST_FAILURE": failure,
         "HOST_STATE": str(state),
         "HOST_EVENTS": str(events),
+        "HOST_MANAGED_PYTHON": str(managed_python),
     }
     result = subprocess.run(
         [
@@ -534,12 +564,13 @@ else:
         timeout=15,
         check=False,
     )
-    assert (result.returncode == 0) == (failure == "none"), result.stderr
+    success = failure in {"none", "fresh"}
+    assert (result.returncode == 0) == success, result.stderr
     assert original.read_bytes() == b"immutable capital history"
     final = json.loads(state.read_text())
     assert final["active"] == (failure != "activate")
     sequence = events.read_text().splitlines()
-    if failure == "none":
+    if success:
         enable = next(i for i, event in enumerate(sequence) if "systemctl enable --now" in event)
         assert (
             sequence.index("identity")
@@ -552,6 +583,9 @@ else:
     else:
         assert "receipt" not in sequence
         assert not any("systemctl enable --now" in event for event in sequence)
+    if failure == "fresh":
+        assert (release_dir / "src/invest/__init__.py").stat().st_mode & 0o004
+        assert (release_dir / "src/invest").stat().st_mode & 0o001
 
 
 def test_account_export_discovers_metadata_and_omits_local_secrets(

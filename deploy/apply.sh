@@ -48,7 +48,9 @@ if [[ -e $release || -L $release ]]; then
   [[ $(cat "$release/.source-sha256") == "$source_sha" ]] || fail 'Immutable release checksum mismatch'
 else
   mkdir -m 0755 "$release"
-  tar --no-same-owner -xzf "$incoming/source.tar.gz" --strip-components=1 -C "$release"
+  # The code is public. Private staging's umask must not hide implicit tar directories
+  # from the unprivileged service user (sdists do not contain directory entries).
+  (umask 022; tar --no-same-owner -xzf "$incoming/source.tar.gz" --strip-components=1 -C "$release")
   # Managed Python lives outside root HOME, which the service sandbox deliberately hides.
   export UV_PYTHON_INSTALL_DIR=/opt/invest/python UV_CACHE_DIR=/opt/invest/uv-cache
   (umask 022; cd "$release" && uv sync --locked --no-dev --python 3.12 --managed-python) >"$incoming/install.log" 2>&1
@@ -65,8 +67,11 @@ install -d -m 0700 -o invest -g invest /var/lib/invest
 for name in data backups operations cache; do
   install -d -m 0700 -o invest -g invest "/var/lib/invest/$name"
 done
+chown -R invest:invest /var/lib/invest/cache
 install -d -m 0750 -o root -g invest /etc/invest
 export MPLCONFIGDIR=/var/lib/invest/cache/matplotlib
+runuser -u invest -- test -r "$release/deploy/release.py" \
+  || fail 'Release source is not readable by the service user'
 account=/var/lib/invest/account
 bootstrap=0
 if [[ -e $account || -L $account ]]; then
@@ -96,7 +101,7 @@ else
   if [[ ! -f $archive ]]; then archive=/opt/invest/bootstrap/account.tar.gz; fi
   [[ -f $archive && ! -L $archive ]] || fail 'Supply the private existing account archive before handover'
   "$python" "$release/deploy/release.py" extract-account "$archive" "$incoming/bootstrap"
-  identity=$("$python" "$release/deploy/release.py" identity "$incoming/bootstrap/account" 2>"$incoming/verify.log")
+  identity=$(MPLCONFIGDIR="$incoming/matplotlib" "$python" "$release/deploy/release.py" identity "$incoming/bootstrap/account" 2>"$incoming/verify.log")
   read -r account_id expected_head <<< "$identity"
 fi
 if [[ ! -s $incoming/invest.env && ! -s /etc/invest/invest.env ]]; then

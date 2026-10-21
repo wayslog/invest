@@ -41,6 +41,7 @@ for name in data backups operations cache; do
   install -d -m 0700 -o invest -g invest "/var/lib/invest/$name"
 done
 chown -R invest:invest /var/lib/invest/account
+chown -R invest:invest /var/lib/invest/cache
 chown root:root /etc/invest/invest.env
 chmod 0600 /etc/invest/invest.env
 install -m 0640 -o root -g invest "$release_dir/deploy/operations.toml" /etc/invest/operations.toml
