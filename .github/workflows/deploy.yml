@@ -6,8 +6,16 @@ on:
       operation:
         description: First check connectivity, then deploy the tested main commit
         type: choice
-        options: [preflight, deploy]
+        options: [preflight, prepare-handoff, inspect, deploy]
         default: preflight
+      handoff_blob:
+        description: Optional encrypted first-handover object, populated by the deployment operator
+        type: string
+        default: ""
+      inspection_recipient:
+        description: Optional public certificate for encrypted runtime inspection
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -52,6 +60,33 @@ jobs:
     if: inputs.operation == 'deploy'
     uses: ./.github/workflows/ci.yml
 
+  prepare-handoff:
+    needs: trusted-branch
+    if: inputs.operation == 'prepare-handoff'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare a temporary public encryption certificate
+        env:
+          INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
+          INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
+          INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
+          INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
+        run: python deploy/github_actions.py prepare-handoff
+      - uses: actions/upload-artifact@v4
+        with:
+          name: handoff-recipient
+          path: handoff-recipient.pem
+          retention-days: 1
+          if-no-files-found: error
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
@@ -81,4 +116,34 @@ jobs:
           INVEST_RELEASE_SHA256: ${{ needs.build.outputs.source_sha256 }}
           INVEST_DEPLOY_COMMIT: ${{ github.sha }}
           INVEST_DEPLOY_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
-        run: python deploy/github_actions.py deploy --artifact release-artifact
+          INVEST_HANDOFF_BLOB: ${{ inputs.handoff_blob }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python deploy/github_actions.py deploy --artifact release-artifact --handoff-blob "$INVEST_HANDOFF_BLOB"
+
+  inspect:
+    needs: trusted-branch
+    if: inputs.operation == 'inspect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Encrypt private service receipts and diagnostics for the operator
+        env:
+          INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
+          INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
+          INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
+          INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
+          INVEST_INSPECTION_RECIPIENT: ${{ inputs.inspection_recipient }}
+        run: python deploy/github_actions.py inspect
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-inspection-encrypted
+          path: runtime-inspection.cms
+          retention-days: 1
+          if-no-files-found: error

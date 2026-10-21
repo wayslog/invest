@@ -1,7 +1,9 @@
 """GitHub runner transport. Private payloads never become Actions artifacts or log output."""
 
 import argparse
+import base64
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -11,6 +13,8 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 RUNTIME_KEYS = (
     "APCA_API_KEY_ID",
@@ -48,7 +52,7 @@ def runtime_environment() -> str | None:
 
 def run_quiet(
     command: list[str], label: str, *, data: bytes | None = None, timeout: int = 120
-) -> None:
+) -> bytes:
     try:
         result = subprocess.run(
             command, input=data, capture_output=True, timeout=timeout, check=False
@@ -73,11 +77,49 @@ def run_quiet(
         # Only our fixed, data-free diagnostic lines can enter public workflow logs.
         markers = re.findall(r"^deploy_error: ([a-z0-9 ,;._-]+)$", stderr, re.MULTILINE)
         if markers:
-            detail = markers[-1]
+            detail = markers[0]
         raise RuntimeError(f"{label}: {detail} (exit {result.returncode})")
+    return bytes(result.stdout)
 
 
-def execute(operation: str, artifact: Path | None, account: Path | None = None) -> None:
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+def download_handoff(blob: str) -> bytes:
+    """Fetch only ciphertext, pinned to its Git object ID, with a bounded response."""
+    if not re.fullmatch(r"[0-9a-f]{40}", blob):
+        raise ValueError("Invalid encrypted handover object")
+    repository = required("GITHUB_REPOSITORY", r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+    token = required("GITHUB_TOKEN")
+    request = Request(
+        f"https://api.github.com/repos/{repository}/git/blobs/{blob}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with build_opener(NoRedirect()).open(request, timeout=30) as response:
+            raw = response.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            raise ValueError("Encrypted handover object is too large")
+        record = json.loads(raw)
+        if record["encoding"] != "base64":
+            raise ValueError("Unexpected encrypted handover encoding")
+        data = base64.b64decode("".join(record["content"].split()), validate=True)
+    except (HTTPError, URLError, TimeoutError, OSError, KeyError, TypeError):
+        raise ValueError("Unable to read the encrypted handover object") from None
+    header = f"blob {len(data)}\0".encode()
+    if hashlib.sha1(header + data).hexdigest() != blob:
+        raise ValueError("Encrypted handover Git object changed")
+    return data
+
+
+def execute(
+    operation: str,
+    artifact: Path | None,
+    account: Path | None = None,
+    handoff_blob: str = "",
+) -> None:
     root = Path(__file__).resolve().parent
     host = required("INVEST_SSH_HOST", r"[A-Za-z0-9][A-Za-z0-9.-]*")
     user = os.environ.get("INVEST_SSH_USER", "root")
@@ -129,6 +171,40 @@ def execute(operation: str, artifact: Path | None, account: Path | None = None) 
         if operation == "preflight":
             print("SSH, systemd, clock and uv checks passed; host unchanged.")
             return
+        if operation == "prepare-handoff":
+            certificate = run_quiet(
+                [*ssh, "bash -s"],
+                "Prepare encrypted handover",
+                data=(root / "prepare-handoff.sh").read_bytes(),
+            )
+            if not re.fullmatch(
+                rb"-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]+-----END CERTIFICATE-----\n",
+                certificate,
+            ):
+                raise ValueError("Invalid public handover certificate")
+            Path("handoff-recipient.pem").write_bytes(certificate)
+            print("Public handover certificate prepared; private key remains on the host.")
+            return
+        if operation == "inspect":
+            certificate_text = required("INVEST_INSPECTION_RECIPIENT")
+            if not re.fullmatch(
+                r"-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]+-----END CERTIFICATE-----\n?",
+                certificate_text,
+            ):
+                raise ValueError("Invalid public inspection recipient")
+            prefix = b"recipient_base64=" + base64.b64encode(certificate_text.encode()) + b"\n"
+            encrypted = run_quiet(
+                [*ssh, "bash -s"],
+                "Inspect deployed runtime",
+                data=prefix + (root / "inspect.sh").read_bytes(),
+                timeout=300,
+            )
+            Path("runtime-inspection.cms").write_bytes(encrypted)
+            Path("runtime-inspection.cms").chmod(0o600)
+            print("Runtime inspection encrypted for the operator; private host output withheld.")
+            return
+        if account is not None and handoff_blob:
+            raise ValueError("Choose one source for the existing account")
         commit = required("INVEST_DEPLOY_COMMIT", r"[0-9a-f]{40}")
         run = required("INVEST_DEPLOY_RUN", r"[0-9]+-[0-9]+")
         source_sha = required("INVEST_RELEASE_SHA256", r"[0-9a-f]{64}")
@@ -154,6 +230,9 @@ def execute(operation: str, artifact: Path | None, account: Path | None = None) 
                 "Prepare existing local account",
                 timeout=300,
             )
+        if handoff_blob:
+            (payload / "account.cms").write_bytes(download_handoff(handoff_blob))
+            (payload / "account.cms").chmod(0o600)
         bundle = work / "payload.tar.gz"
         with tarfile.open(bundle, "w:gz") as archive:
             for path in sorted(payload.iterdir()):
@@ -205,16 +284,19 @@ def execute(operation: str, artifact: Path | None, account: Path | None = None) 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["preflight", "deploy"])
+    parser.add_argument("operation", choices=["preflight", "prepare-handoff", "inspect", "deploy"])
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--account", type=Path, help="Optional existing local account to transfer")
+    parser.add_argument(
+        "--handoff-blob", default="", help="Optional encrypted first-handover object"
+    )
     args = parser.parse_args()
     try:
         account = args.account
         local = Path(__file__).resolve().parents[1] / "reports/m3-cash-account"
-        if account is None and local.is_dir():
+        if account is None and not args.handoff_blob and local.is_dir():
             account = local
-        execute(args.operation, args.artifact, account)
+        execute(args.operation, args.artifact, account, args.handoff_blob)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"Deployment failed: {error}", file=sys.stderr)
         raise SystemExit(1) from None

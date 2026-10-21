@@ -7,13 +7,20 @@ Actions 负责连接预检、测试、构建和发布；持久 Linux 主机继�
 工作流为 [deploy.yml](../.github/workflows/deploy.yml)，只允许从 `main` 手动触发，
 同一时间只执行一次生产部署。构建复用 [CI](../.github/workflows/ci.yml)，只有
 静态检查、完整测试、两个离线演示和打包全部通过，才会进入持有生产凭据的部署 job。
-当前文件实现完成不表示 workflow 已推送、secrets 已配置或主机已上线。
+截至 2026-10-21，工作流已推送；提交 `8de63b8` 的
+[CI](https://github.com/wayslog/invest/actions/runs/39581499422)和
+[SSH/主机只读预检](https://github.com/wayslog/invest/actions/runs/39582930230)通过。
+预检运行的 `build`/`deploy` job 均跳过。
+首次[正式发布试跑](https://github.com/wayslog/invest/actions/runs/39583795728)的完整测试、
+构建和主机锁定环境安装通过，但在 `verify_bootstrap` 阶段因原账户尚未移交而停止；
+未启动账户服务或定时器。该作业已确认四项运行凭据均有提供，实际通知与日结仍待验收。
 
 ## GitHub 配置
 
-在仓库 Settings → Environments 创建 `production`，部署分支限制为 `main`。
-在该 Environment 配置以下 secrets，不在聊天、workflow 输入、Git 或公开日志粘贴值。
-当前 Codex GitHub 集成访问 Actions 配置/secrets 返回 403，不能代替仓库管理员配置它们。
+仓库已存在 `production` Environment，workflow 要求从 `main` 执行。
+该 Environment 使用以下 secrets，不在聊天、workflow 输入、Git 或公开日志粘贴值。
+当前 Codex GitHub 集成读取 production secrets 列表返回 403，不能完整核实或管理凭据清单。
+SSH 凭据已经实际预检验证；行情/Telegram 及服务器现有运行配置仍待正式发布验收。
 云工作区里已有的 Alpaca 环境变量不会自动同步成 GitHub secrets。
 账户 ID、日志 head 和账户包校验值由程序自动读取，不需要配置账户元数据。
 
@@ -50,7 +57,26 @@ uv run --locked python deploy/release.py pack-account \
 一次性把该包通过可信 SSH 连接放到服务器固定路径，目录 0700、文件 0600、root 持有。
 已有本地账户的部署器也会自动打包并传输；自定义目录可用可选的 `--account` 参数指定。
 GitHub 托管 runner 无法读取云工作区里未提交的私人文件，因此首次仍需实际移交数据；
-账户包由部署者准备，不作为额外 GitHub secret，不上传公开 artifact。
+账户包不作为额外 GitHub secret，不上传公开 artifact。
+
+源端无法直连 SSH 时，可以由 Actions 完成加密交接，无需新增 secret 或下载地址：
+
+1. 从 `main` 运行 `operation=prepare-handoff`。主机生成临时 RSA 3072 位密钥和公开证书，
+   私钥仅存于 root 可读的 `/opt/invest/bootstrap/handoff.key`；公开证书作为
+   `handoff-recipient` artifact 保存一天。此操作不改账户或启动服务；`preflight` 仍保持只读。
+2. 将该次可信 `main` 作业的公开证书下载到源端忽略目录，然后运行：
+
+   ```bash
+   uv run --locked python deploy/handoff.py \
+     --recipient reports/deployments/handoff/handoff-recipient.pem
+   ```
+
+3. 工具自动重放、打包原账户，用 AES-256-GCM 和 RSA-OAEP/SHA-256 加密，
+   仅把密文放入 GitHub Git blob 对象，再自动触发 `main` 的正式部署。
+   `handoff_blob` 是工具自动填写的可选传输引用，常规部署留空，不要求手填账户 ID 或摘要。
+4. runner 核对密文对象，转交主机；主机验证密文、重放原日志后交接。
+   成功上线后删除临时解密私钥。GitHub 可能保留密文对象，但不会收到明文日志或解密私钥。
+   激活失败时保留受保护密钥以便排查；原账户仍不能被替换或重开。
 
 程序完整重放账户日志并自动取得 ID/head；已有账户不会被包覆盖，也不会重新开户。
 首次交接后，Linux 主机成为唯一写入端，本地副本留作停止更新的存档。
@@ -85,6 +111,12 @@ GitHub runner 同样可能被目标机网络或防火墙拒绝；Actions 迁移�
 受保护失败日志在 `/opt/invest/deployment-logs/<run-id>-<attempt>/`，服务日志在 journalctl。
 runner/主机私有暂存包在作业结束时清理；若 SSH 中断导致清理失败，检查
 `/opt/invest/incoming/` 并清理遗留文件。
+
+源端不能直连 SSH 时，可从 `main` 执行 `operation=inspect`，把操作者本地生成的
+RSA 公开证书放入 `inspection_recipient`。主机将服务状态、最近的运行/告警/部署
+Parquet 凭据及诊断日志加密后作为 `runtime-inspection-encrypted` artifact 保存一天。
+解密私钥只留在操作者本地；不导出 EnvironmentFile，不将账户状态或服务日志明文写入 Actions。
+此操作只读账户，不运行日结或修改定时器。
 
 目前自动发布仅支持**账户引擎指纹不变**的部署调整。代码改变引擎后先按
 [账户迁移说明](operations.md) 在唯一权威主机上完成显式迁移、复核及人工恢复；

@@ -68,12 +68,23 @@ done
 install -d -m 0750 -o root -g invest /etc/invest
 export MPLCONFIGDIR=/var/lib/invest/cache/matplotlib
 account=/var/lib/invest/account
-bootstrap=0
+bootstrap=0 encrypted_handoff=0
 if [[ -e $account || -L $account ]]; then
   [[ -d $account/journal && ! -L $account ]] || fail 'Existing account path is invalid'
 else
   bootstrap=1
   phase=verify_bootstrap
+  if [[ -f $incoming/account.cms ]]; then
+    [[ -f /opt/invest/bootstrap/handoff.key && ! -L /opt/invest/bootstrap/handoff.key \
+      && -f /opt/invest/bootstrap/handoff.pem && ! -L /opt/invest/bootstrap/handoff.pem ]] \
+      || fail 'Prepare the encrypted handover recipient first'
+    openssl cms -decrypt -binary -inform DER -in "$incoming/account.cms" \
+      -recip /opt/invest/bootstrap/handoff.pem -inkey /opt/invest/bootstrap/handoff.key \
+      -out "$incoming/account.tar.gz" >"$incoming/decrypt.log" 2>&1 \
+      || fail 'Encrypted account authentication failed'
+    chmod 0600 "$incoming/account.tar.gz"
+    encrypted_handoff=1
+  fi
   archive=$incoming/account.tar.gz
   if [[ ! -f $archive ]]; then archive=/opt/invest/bootstrap/account.tar.gz; fi
   [[ -f $archive && ! -L $archive ]] || fail 'Supply the private existing account archive before handover'
@@ -132,3 +143,7 @@ phase=receipt
 runuser -u invest -- "$python" "$release/deploy/release.py" receipt "$account" "$account_id" "$expected_head" "$release" "$run"
 phase=enable_timers
 systemctl enable --now invest-forward.timer invest-forward-health.timer
+if (( encrypted_handoff )); then
+  # The transferred ciphertext is no longer decryptable with any long-lived SSH credential.
+  rm -f /opt/invest/bootstrap/handoff.key /opt/invest/bootstrap/handoff.pem
+fi

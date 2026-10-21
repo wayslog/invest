@@ -18,7 +18,7 @@ SPY 待支付分红的采集范围已修复，真实现金观察账户已登记�
 0.6.0 已通过归档重放、备份和状态等值校验，将原现金账户迁移至新版；账户 ID、
 5000 美元、净值高点、风险状态和旧日志均保留。Linux/systemd、Telegram 告警、心跳、
 日结及备份已实现，新增 [GitHub Actions 部署](docs/github-actions-deployment.md)，
-主机上线仍待 runner 接入和安全凭据；见 [运行与部署](docs/operations.md)。
+GitHub runner 连接预检已通过，正式发布与日结运行验收待完成；见 [运行与部署](docs/operations.md)。
 失败候选的复盘及新未来验证方案见 [R1 复盘](docs/research/r1-postmortem.md)，
 外部账户条件见 [T09 核查](docs/access/t09.md)。
 
