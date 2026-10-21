@@ -1,10 +1,12 @@
-"""Deployment gates outside the investment engine; no account initialization or migration."""
+"""Deployment gates and explicitly requested cash-account engine transitions."""
 
 import argparse
 import hashlib
 import os
 import re
+import sys
 import tarfile
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -87,6 +89,78 @@ def verify_account(
     return status
 
 
+def migration_identity(account: Path) -> dict[str, Any]:
+    from invest.forward import _runs, account_lock, forward_status
+    from invest.forward_versions import verify_archived
+
+    status = forward_status(account)
+    if (
+        status["mode"] != "cash_observation"
+        or status["operations"] != "active"
+        or status["risk_status"] != "active"
+        or status["missing_sessions"] != 0
+        or status["engine_matches"]
+    ):
+        raise ValueError(
+            "Explicit migration requires a current, active cash account and a new engine"
+        )
+    with account_lock(account):
+        runs = _runs(account)
+        if digest(runs[-1] / "files.parquet") != status["head"]:
+            raise ValueError("Account changed before archived-engine verification")
+        verify_archived(runs, status["active_engine_sha256"])
+    return status
+
+
+def migrate_account(account: Path, account_id: str, head: str, request: Path, backup: Path) -> None:
+    from invest.forward import _load, account_lock, control_forward, forward_status, verify_forward
+    from invest.forward_migration import migrate_forward
+
+    content = sys.stdin.read(16_385) if str(request) == "-" else request.read_text()
+    if len(content) > 16_384:
+        raise ValueError("Migration request is too large")
+    metadata = tomllib.loads(content)
+    if set(metadata) != {"actor", "reason"} or any(
+        not isinstance(value, str) or not value.strip() or len(value) > 500
+        for value in metadata.values()
+    ):
+        raise ValueError("Explicit migration requires an actor and a reason")
+    original = migration_identity(account)
+    if original["account_id"] != account_id or original["head"] != require_digest(head):
+        raise ValueError("Account changed before the explicit migration")
+    with account_lock(account):
+        runs, _, _, state = _load(account)
+        original_files = {path / "files.parquet": digest(path / "files.parquet") for path in runs}
+        original_tables = state.tables()
+    result = migrate_forward(
+        account,
+        head,
+        original["active_engine_sha256"],
+        backup,
+        metadata["actor"],
+        metadata["reason"],
+    )
+    verify_forward(account)
+    paused = forward_status(account)
+    if paused["account_id"] != account_id or paused["head"] != result["head"]:
+        raise ValueError("Account changed after migration; it was not resumed")
+    # The engine itself requires up-to-date accounting and preserves the risk latch.
+    control_forward(
+        account,
+        "resume",
+        metadata["actor"],
+        metadata["reason"] + "; migration, capital and risk verified before resuming",
+    )
+    verify_account(account, account_id)
+    with account_lock(account):
+        current_tables = _load(account)[-1].tables()
+        if any(digest(path) != value for path, value in original_files.items()) or any(
+            not table.equals(current_tables[name], check_metadata=True)
+            for name, table in original_tables.items()
+        ):
+            raise ValueError("Migration changed capital, risk, obligations or original history")
+
+
 def pack_account(account: Path, output: Path) -> None:
     """Export only a fully verified journal, without asking for account metadata."""
     from invest.forward import _runs, account_lock
@@ -153,11 +227,18 @@ def main() -> None:
     command = commands.add_parser("extract-account")
     command.add_argument("archive", type=Path)
     command.add_argument("destination", type=Path)
-    command = commands.add_parser("identity")
-    command.add_argument("account", type=Path)
+    for name in ("identity", "migration-identity"):
+        command = commands.add_parser(name)
+        command.add_argument("account", type=Path)
     command = commands.add_parser("pack-account")
     command.add_argument("account", type=Path)
     command.add_argument("output", type=Path)
+    command = commands.add_parser("migrate")
+    command.add_argument("account", type=Path)
+    command.add_argument("account_id")
+    command.add_argument("head")
+    command.add_argument("request", type=Path)
+    command.add_argument("backup", type=Path)
     for name in ("verify", "receipt"):
         command = commands.add_parser(name)
         command.add_argument("account", type=Path)
@@ -174,8 +255,12 @@ def main() -> None:
         print(f"source_sha256={digest(archives[0])}")
     elif args.command == "extract-account":
         extract_account(args.archive, args.destination)
-    elif args.command == "identity":
-        status = verify_account(args.account)
+    elif args.command in {"identity", "migration-identity"}:
+        status = (
+            migration_identity(args.account)
+            if args.command == "migration-identity"
+            else verify_account(args.account)
+        )
         if not re.fullmatch(r"[0-9a-f]{32}", status["account_id"]):
             raise ValueError("Invalid account identity in journal")
         print(f"{status['account_id']} {require_digest(status['head'])}")
@@ -183,6 +268,8 @@ def main() -> None:
         pack_account(args.account, args.output)
     elif args.command == "verify":
         verify_account(args.account, args.account_id, args.head)
+    elif args.command == "migrate":
+        migrate_account(args.account, args.account_id, args.head, args.request, args.backup)
     else:
         write_receipt(args.account, args.account_id, args.head, args.release, args.run)
 

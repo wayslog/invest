@@ -8,7 +8,7 @@
 项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
 M0 工程原型已通过验收，见 [M0 验收记录](docs/milestones/m0.md)。
 M1 已完成：SPY 真实历史数据、质量准入、发行方分红核对和账户回放通过本地验收，
-见 [M1 验收记录](docs/milestones/m1.md)。当前版本 **`0.6.0`**，M2 已完成，
+见 [M1 验收记录](docs/milestones/m1.md)。当前版本 **`0.6.1`**，M2 已完成，
 见 [M2 验收记录](docs/milestones/m2.md)。首轮选定候选的留出收益为 -1.20%，
 未通过 M3 研究门槛；工程完成不表示策略可投入运行。
 M3 持续账户、原子事件日志、每日任务及恢复演练已实现；正式策略观察仍待候选资格，
@@ -18,7 +18,9 @@ SPY 待支付分红的采集范围已修复，真实现金观察账户已登记�
 0.6.0 已通过归档重放、备份和状态等值校验，将原现金账户迁移至新版；账户 ID、
 5000 美元、净值高点、风险状态和旧日志均保留。Linux/systemd、Telegram 告警、心跳、
 日结及备份已实现，新增 [GitHub Actions 部署](docs/github-actions-deployment.md)，
-GitHub runner 连接预检已通过，正式发布与日结运行验收待完成；见 [运行与部署](docs/operations.md)。
+原账户已交接至 Linux，首个交易日的采集、对账、备份与 Telegram 送达均已验证。
+0.6.1 修复服务 CLI 时间输出导致的错误退出，待显式迁移和定时器验收后正式发布；
+见 [运行与部署](docs/operations.md)。本地原账户副本已停止写入。
 失败候选的复盘及新未来验证方案见 [R1 复盘](docs/research/r1-postmortem.md)，
 外部账户条件见 [T09 核查](docs/access/t09.md)。
 

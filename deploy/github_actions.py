@@ -209,6 +209,8 @@ def execute(
             return
         if account is not None and handoff_blob:
             raise ValueError("Choose one source for the existing account")
+        if operation == "migrate" and (account is not None or handoff_blob):
+            raise ValueError("Migration must use the existing authoritative host account")
         commit = required("INVEST_DEPLOY_COMMIT", r"[0-9a-f]{40}")
         run = required("INVEST_DEPLOY_RUN", r"[0-9]+-[0-9]+")
         source_sha = required("INVEST_RELEASE_SHA256", r"[0-9a-f]{64}")
@@ -218,6 +220,16 @@ def execute(
         payload = work / "payload"
         payload.mkdir(mode=0o700)
         shutil.copyfile(archives[0], payload / "source.tar.gz")
+        if operation == "migrate":
+            actor = required("GITHUB_ACTOR", r"[A-Za-z0-9_.\[\]-]{1,128}")
+            reason = required("INVEST_MIGRATION_REASON")
+            if len(reason) > 500:
+                raise ValueError("Migration reason is too long")
+            request = payload / "migration.toml"
+            request.write_text(
+                f"actor = {json.dumps('github:' + actor)}\nreason = {json.dumps(reason)}\n"
+            )
+            request.chmod(0o600)
         environment = runtime_environment()
         if environment is not None:
             (payload / "invest.env").write_text(environment)
@@ -297,7 +309,9 @@ def execute(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["preflight", "prepare-handoff", "inspect", "deploy"])
+    parser.add_argument(
+        "operation", choices=["preflight", "prepare-handoff", "inspect", "deploy", "migrate"]
+    )
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--account", type=Path, help="Optional existing local account to transfer")
     parser.add_argument(
@@ -307,7 +321,12 @@ def main() -> None:
     try:
         account = args.account
         local = Path(__file__).resolve().parents[1] / "reports/m3-cash-account"
-        if account is None and not args.handoff_blob and local.is_dir():
+        if (
+            args.operation == "deploy"
+            and account is None
+            and not args.handoff_blob
+            and local.is_dir()
+        ):
             account = local
         execute(args.operation, args.artifact, account, args.handoff_blob)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as error:

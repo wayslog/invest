@@ -12,6 +12,12 @@ from invest.analysis import analyze_prices
 from invest.config import load_config
 
 
+def _json_default(value: object) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="invest", description="US equity research tools")
     parser.add_argument("--version", action="version", version=version("wayslog-invest"))
@@ -225,5 +231,5 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
     except (OSError, UnicodeError, ValueError) as exc:
         parser.exit(2, f"invest: {exc}\n")
-    print(json.dumps(output, indent=2, allow_nan=False))
+    print(json.dumps(output, indent=2, allow_nan=False, default=_json_default))
     return exit_code

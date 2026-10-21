@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from contextlib import nullcontext
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -118,7 +119,98 @@ def test_deployment_gate_cannot_replace_or_resume_an_account(change: dict[str, A
 
 
 @pytest.mark.parametrize(
-    ("with_account", "with_handoff"), [(False, False), (True, False), (False, True)]
+    "change",
+    [
+        {"mode": "qualified_strategy"},
+        {"operations": "paused"},
+        {"operations": "stopped"},
+        {"risk_status": "halted"},
+        {"missing_sessions": 1},
+        {"engine_matches": True},
+    ],
+)
+def test_explicit_migration_cannot_resume_unready_or_risk_halted_accounts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: dict[str, Any]
+) -> None:
+    status = {
+        "mode": "cash_observation",
+        "operations": "active",
+        "risk_status": "active",
+        "missing_sessions": 0,
+        "engine_matches": False,
+    }
+    status.update(change)
+    monkeypatch.setattr("invest.forward.forward_status", lambda account: status)
+    with pytest.raises(ValueError, match="Explicit migration requires"):
+        release.migration_identity(tmp_path / "account")
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_explicit_migration_reads_private_request_and_checks_capital_equivalence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: bool
+) -> None:
+    import pyarrow as pa
+
+    state = {"cash": 5000, "peak": 5000, "operations": "active", "risk_status": "active"}
+    original = {
+        "account_id": "a" * 32,
+        "head": "b" * 64,
+        "active_engine_sha256": "c" * 64,
+        "engine_matches": False,
+        "mode": "cash_observation",
+        "operations": "active",
+    }
+    current = original.copy()
+    calls: list[str] = []
+    history = tmp_path / "account/journal/0"
+    history.mkdir(parents=True)
+    inventory = history / "files.parquet"
+    inventory.write_bytes(b"original immutable inventory")
+
+    class State:
+        def tables(self) -> dict[str, Any]:
+            return {"state": pa.Table.from_pylist([state.copy()])}
+
+    monkeypatch.setattr(release, "migration_identity", lambda account: original.copy())
+    monkeypatch.setattr("invest.forward.account_lock", lambda account: nullcontext())
+    monkeypatch.setattr("invest.forward._load", lambda account: ([history], None, None, State()))
+    monkeypatch.setattr("invest.forward.forward_status", lambda account: current.copy())
+    monkeypatch.setattr("invest.forward.verify_forward", lambda account: {"head": current["head"]})
+
+    def migrate(*args: Any) -> dict[str, Any]:
+        assert args[1:3] == ("b" * 64, "c" * 64)
+        assert args[-2:] == ("owner", "Fix CLI timestamp output")
+        calls.append("migrate")
+        current.update(head="d" * 64, engine_matches=True, operations="paused")
+        state["operations"] = "paused"
+        return {"head": "d" * 64}
+
+    def resume(*args: Any) -> None:
+        assert args[1:3] == ("resume", "owner")
+        calls.append("resume")
+        current.update(head="e" * 64, operations="active")
+        state["operations"] = "active"
+        if tamper:
+            state["cash"] = 9999
+
+    monkeypatch.setattr("invest.forward_migration.migrate_forward", migrate)
+    monkeypatch.setattr("invest.forward.control_forward", resume)
+    monkeypatch.setattr(
+        release.sys, "stdin", io.StringIO('actor="owner"\nreason="Fix CLI timestamp output"\n')
+    )
+    arguments = (tmp_path / "account", "a" * 32, "b" * 64, Path("-"), tmp_path / "backup")
+    if tamper:
+        with pytest.raises(ValueError, match="capital, risk, obligations"):
+            release.migrate_account(*arguments)
+    else:
+        release.migrate_account(*arguments)
+    assert calls == ["migrate", "resume"]
+    assert inventory.read_bytes() == b"original immutable inventory"
+
+
+@pytest.mark.parametrize(
+    ("with_account", "with_handoff", "with_migration"),
+    [(False, False, False), (True, False, False), (False, True, False), (False, False, True)],
 )
 def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_payload(
     tmp_path: Path,
@@ -126,6 +218,7 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
     capsys: pytest.CaptureFixture[str],
     with_account: bool,
     with_handoff: bool,
+    with_migration: bool,
 ) -> None:
     artifact = tmp_path / "artifact"
     artifact.mkdir()
@@ -143,6 +236,8 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
         "APCA_API_SECRET_KEY": "secret-market-value",
         "INVEST_TELEGRAM_BOT_TOKEN": "123:secret-bot-token",
         "INVEST_TELEGRAM_ALLOWED_UID": "12345",
+        "INVEST_MIGRATION_REASON": "Fix CLI receipt timestamps without changing accounting",
+        "GITHUB_ACTOR": "owner",
     }
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
@@ -188,6 +283,8 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
                     expected.add("account.tar.gz")
                 if with_handoff:
                     expected.update({"account.cms", "account-signer.pem"})
+                if with_migration:
+                    expected.add("migration.toml")
                 assert set(archive.getnames()) == expected
                 runtime = archive.extractfile("invest.env")
                 assert runtime is not None and b"secret-market-value" in runtime.read()
@@ -198,7 +295,7 @@ def test_ssh_transport_records_first_host_key_and_keeps_secrets_in_private_paylo
     monkeypatch.setattr(runner, "run_quiet", fake_run)
     with pytest.raises(RuntimeError, match="simulated"):
         runner.execute(
-            "deploy",
+            "migrate" if with_migration else "deploy",
             artifact,
             tmp_path / "existing-account" if with_account else None,
             "d" * 40 if with_handoff else "",
@@ -395,7 +492,10 @@ def test_environment_file_cannot_inject_more_variables(monkeypatch: pytest.Monke
         runner.runtime_environment()
 
 
-@pytest.mark.parametrize("failure", ["verify", "handover", "changed", "activate", "none", "fresh"])
+@pytest.mark.parametrize(
+    "failure",
+    ["verify", "handover", "changed", "activate", "none", "fresh", "migrate", "migrate_failed"],
+)
 def test_host_deployment_preserves_account_and_controls_timers_on_failure(
     tmp_path: Path,
     failure: str,
@@ -448,6 +548,11 @@ def test_host_deployment_preserves_account_and_controls_timers_on_failure(
     payload = incoming / "payload.tar.gz"
     with tarfile.open(payload, "w:gz") as archive:
         archive.add(source, arcname="source.tar.gz")
+        if failure.startswith("migrate"):
+            content = b'actor="owner"\nreason="CLI output fix"\n'
+            entry = tarfile.TarInfo("migration.toml")
+            entry.size = len(content)
+            archive.addfile(entry, io.BytesIO(content))
     source.unlink()
     tools = tmp_path / "tools"
     tools.mkdir()
@@ -489,9 +594,9 @@ elif name == "runuser":
         path = Path(command[-1])
         assert path.stat().st_mode & 0o004, "Service must be able to read public code"
         assert path.parent.stat().st_mode & 0o001, "Implicit source directories must be traversable"
-    elif "identity" in command:
+    elif "identity" in command or "migration-identity" in command:
         assert not state["active"], "Metadata must be discovered after quiescence"
-        log("identity")
+        log("migration-identity" if "migration-identity" in command else "identity")
         if os.environ["HOST_FAILURE"] == "verify":
             sys.exit(1)
         print("a" * 32, state["head"])
@@ -509,7 +614,15 @@ elif name == "runuser":
             state["head"] = "e" * 64
             state_path.write_text(json.dumps(state))
     elif "receipt" in command:
+        assert command[command.index("receipt") + 3] == "d" * 64, "Keep the original handover head"
         log("receipt")
+    elif "migrate" in command:
+        assert command[-2] == "-" and "actor" in sys.stdin.read()
+        log("migrate")
+        state["head"] = "e" * 64
+        state_path.write_text(json.dumps(state))
+        if os.environ["HOST_FAILURE"] == "migrate_failed":
+            sys.exit(1)
 elif name == "uv":
     Path(".venv/bin").mkdir(parents=True)
     Path(".venv/bin/python").symlink_to(os.environ["HOST_MANAGED_PYTHON"])
@@ -564,13 +677,22 @@ else:
         timeout=15,
         check=False,
     )
-    success = failure in {"none", "fresh"}
+    success = failure in {"none", "fresh", "migrate"}
     assert (result.returncode == 0) == success, result.stderr
     assert original.read_bytes() == b"immutable capital history"
     final = json.loads(state.read_text())
-    assert final["active"] == (failure != "activate")
+    assert final["active"] == (failure not in {"activate", "migrate_failed"})
     sequence = events.read_text().splitlines()
-    if success:
+    if failure == "migrate":
+        assert (
+            sequence.index("migration-identity")
+            < sequence.index("migrate")
+            < sequence.index("identity")
+            < sequence.index("verify")
+            < sequence.index("activate")
+            < sequence.index("receipt")
+        )
+    elif success:
         enable = next(i for i, event in enumerate(sequence) if "systemctl enable --now" in event)
         assert (
             sequence.index("identity")

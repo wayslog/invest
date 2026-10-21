@@ -6,7 +6,7 @@ on:
       operation:
         description: First check connectivity, then deploy the tested main commit
         type: choice
-        options: [preflight, prepare-handoff, inspect, deploy]
+        options: [preflight, prepare-handoff, inspect, deploy, migrate]
         default: preflight
       handoff_blob:
         description: Optional encrypted first-handover object, populated by the deployment operator
@@ -14,6 +14,10 @@ on:
         default: ""
       inspection_recipient:
         description: Optional public certificate for encrypted runtime inspection
+        type: string
+        default: ""
+      migration_reason:
+        description: Required only for an explicitly requested cash-account engine migration
         type: string
         default: ""
 
@@ -57,7 +61,7 @@ jobs:
 
   build:
     needs: trusted-branch
-    if: inputs.operation == 'deploy'
+    if: inputs.operation == 'deploy' || inputs.operation == 'migrate'
     uses: ./.github/workflows/ci.yml
 
   prepare-handoff:
@@ -118,7 +122,9 @@ jobs:
           INVEST_DEPLOY_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
           INVEST_HANDOFF_BLOB: ${{ inputs.handoff_blob }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: python deploy/github_actions.py deploy --artifact release-artifact --handoff-blob "$INVEST_HANDOFF_BLOB"
+          INVEST_OPERATION: ${{ inputs.operation }}
+          INVEST_MIGRATION_REASON: ${{ inputs.migration_reason }}
+        run: python deploy/github_actions.py "$INVEST_OPERATION" --artifact release-artifact --handoff-blob "$INVEST_HANDOFF_BLOB"
 
   inspect:
     needs: trusted-branch

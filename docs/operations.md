@@ -1,11 +1,15 @@
 # Linux 每日运行与迁移
 
-运行包版本 0.6.0。systemd 配置在 [deploy](../deploy/)，
+运行包版本 0.6.1。systemd 配置在 [deploy](../deploy/)，
 本地配置示例为 [operations.toml](../configs/operations.toml)。
 部署是否已启动，以 [M3 阶段记录](milestones/m3.md) 和目标主机的验收凭据为准。
 代码和部署包准备完成本身不代表定时器已经在主机运行。
 GitHub Actions 可执行连接预检与受控部署，配置及账户交接见
 [Actions 部署说明](github-actions-deployment.md)。每日任务仍在持久主机运行。
+
+0.6.1 修复日结和健康 CLI 对时间字段的 JSON 输出。0.6.0 的主机日结曾已成功提交、
+对账及备份，却在输出阶段报错退出；已有成功凭据和第一个交易日继续有效。
+修复也会改变引擎源码指纹，必须使用显式迁移，不能只替换代码或清空账户。
 
 ## 账户版本迁移
 

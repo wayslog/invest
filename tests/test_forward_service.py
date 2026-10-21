@@ -1,3 +1,4 @@
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,36 @@ def test_idle_service_still_reconciles_backs_up_and_records_a_healthy_heartbeat(
     assert run_service(config)["outcome"] == "ok"
     assert len(list((tmp_path / "backups").glob("*/*"))) == 1
     assert not alerts
+
+
+def test_service_and_health_cli_serialize_real_receipts_and_preserve_exit_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from invest.cli import main
+
+    config, _ = service(tmp_path, monkeypatch)
+    command = ["forward-service", "--config", str(config)]
+    assert main(command) == 0
+    output = json.loads(capsys.readouterr().out)
+    durable = pq.read_table(output["record"]).to_pylist()[0]
+    assert output["started_at"] == durable["started_at"].isoformat()
+    assert output["finished_at"] == durable["finished_at"].isoformat()
+    assert output["head"] == durable["head"] and output["outcome"] == "ok"
+    assert main(["forward-health", "--config", str(config)]) == 0
+    assert json.loads(capsys.readouterr().out)["healthy"]
+    assert main(command) == 0
+    assert json.loads(capsys.readouterr().out)["head"] == durable["head"]
+
+    def failure(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise ValueError("Acquisition unavailable")
+
+    monkeypatch.setattr("invest.forward_service.forward_job", failure)
+    assert main(command) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["outcome"] == "error" and output["error"] == "Acquisition unavailable"
+    assert pq.read_table(output["record"])["outcome"][0].as_py() == "error"
+    assert main(["forward-health", "--config", str(config)]) == 1
+    assert not json.loads(capsys.readouterr().out)["healthy"]
 
 
 def test_service_records_unexpected_failures_deduplicates_alerts_and_announces_recovery(

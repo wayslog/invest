@@ -74,9 +74,12 @@ runuser -u invest -- test -r "$release/deploy/release.py" \
   || fail 'Release source is not readable by the service user'
 account=/var/lib/invest/account
 bootstrap=0
+migration=0
+[[ ! -f $incoming/migration.toml ]] || migration=1
 if [[ -e $account || -L $account ]]; then
   [[ -d $account/journal && ! -L $account ]] || fail 'Existing account path is invalid'
 else
+  (( migration == 0 )) || fail 'Migration requires an existing authoritative host account'
   bootstrap=1
   phase=verify_bootstrap
   if [[ -f $incoming/account.cms ]]; then
@@ -135,13 +138,27 @@ if (( bootstrap )); then
   chown -R invest:invest "$account"
 else
   # Discover the current account only after the previous daily task has finished.
-  identity=$(runuser -u invest -- "$python" "$release/deploy/release.py" identity "$account" 2>"$incoming/verify.log")
+  identity_command=identity
+  (( migration == 0 )) || identity_command='migration-identity'
+  identity=$(runuser -u invest -- "$python" "$release/deploy/release.py" "$identity_command" "$account" 2>"$incoming/verify.log")
   read -r account_id expected_head <<< "$identity"
 fi
 [[ $account_id =~ ^[0-9a-f]{32}$ && $expected_head =~ ^[0-9a-f]{64}$ ]] || fail 'Invalid account journal identity'
-runuser -u invest -- "$python" "$release/deploy/release.py" verify "$account" "$account_id" "$expected_head" >"$incoming/verify.log" 2>&1
-runuser -u invest -- "$release/.venv/bin/invest" forward-backup --account "$account" \
-  --output "/var/lib/invest/backups/deploy-$run" >"$incoming/backup.log" 2>&1
+handover_head=$expected_head
+if (( migration )); then
+  phase=migrate
+  activated=1  # The account may change engines; never restart the old writer on failure.
+  runuser -u invest -- "$python" "$release/deploy/release.py" migrate "$account" "$account_id" \
+    "$expected_head" - "/var/lib/invest/backups/migrate-$run" <"$incoming/migration.toml" \
+    >"$incoming/migration.log" 2>&1
+  identity=$(runuser -u invest -- "$python" "$release/deploy/release.py" identity "$account" 2>"$incoming/verify.log")
+  read -r migrated_id expected_head <<< "$identity"
+  [[ $migrated_id == "$account_id" ]] || fail 'Account identity changed during migration'
+else
+  runuser -u invest -- "$python" "$release/deploy/release.py" verify "$account" "$account_id" "$expected_head" >"$incoming/verify.log" 2>&1
+  runuser -u invest -- "$release/.venv/bin/invest" forward-backup --account "$account" \
+    --output "/var/lib/invest/backups/deploy-$run" >"$incoming/backup.log" 2>&1
+fi
 runuser -u invest -- "$python" "$release/deploy/release.py" verify "$account" "$account_id" "$expected_head" >"$incoming/verify.log" 2>&1
 phase=activate
 activated=1
@@ -152,7 +169,7 @@ fi
 bash "$release/deploy/install-systemd.sh" "$release" --defer-timers >"$incoming/activate.log" 2>&1
 phase=receipt
 # Record after the first daily task, while all timers remain quiescent.
-runuser -u invest -- "$python" "$release/deploy/release.py" receipt "$account" "$account_id" "$expected_head" "$release" "$run"
+runuser -u invest -- "$python" "$release/deploy/release.py" receipt "$account" "$account_id" "$handover_head" "$release" "$run"
 phase=enable_timers
 systemctl enable --now invest-forward.timer invest-forward-health.timer
 # Also clean up a key retained by an earlier activation failure after a successful retry.
