@@ -16,8 +16,14 @@ Actions 负责连接预检、测试、构建和发布；持久 Linux 主机继�
 未启动账户服务或定时器。
 后续[主机验收](https://github.com/wayslog/invest/actions/runs/39587121916)已完成原账户交接、
 Telegram 自检/故障通知、首个交易日采集、12 项对账及备份；日结提交后，0.6.0 CLI
-因时间字段无法输出 JSON 而退出失败。账户仍保持 active，已有 1/60 日，定时器保持禁用。
-0.6.1 的修复和显式迁移正在验收，不能将这次失败的进程退出当成任务未提交后重开账户。
+因时间字段无法输出 JSON 而退出失败。该次账户仍保持 active，已有 1/60 日，定时器保持禁用。
+0.6.1 随后修复 CLI，并于北京时间 **19:15:43** 完成
+[显式迁移及正式发布](https://github.com/wayslog/invest/actions/runs/39589686259)。
+原账户、资金、高点、风险和全部旧日志保留，仍为 1/60 日，两个 timer 均 enabled/active。
+日结、备份、Telegram、健康检查以及 36 项私人凭据核对通过；
+[同提交 CI](https://github.com/wayslog/invest/actions/runs/39589626803)为 254 项测试、88% 覆盖率。
+正式版本为 [v0.6.1](https://github.com/wayslog/invest/releases/tag/v0.6.1)，代码提交 `f468424`。
+首次 CLI 失败及故障通知继续保留，不因最终发布成功而抹去。
 
 ## GitHub 配置
 

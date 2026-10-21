@@ -18,9 +18,10 @@ SPY 待支付分红的采集范围已修复，真实现金观察账户已登记�
 0.6.0 已通过归档重放、备份和状态等值校验，将原现金账户迁移至新版；账户 ID、
 5000 美元、净值高点、风险状态和旧日志均保留。Linux/systemd、Telegram 告警、心跳、
 日结及备份已实现，新增 [GitHub Actions 部署](docs/github-actions-deployment.md)，
-原账户已交接至 Linux，首个交易日的采集、对账、备份与 Telegram 送达均已验证。
-0.6.1 修复服务 CLI 时间输出导致的错误退出，待显式迁移和定时器验收后正式发布；
-见 [运行与部署](docs/operations.md)。本地原账户副本已停止写入。
+[0.6.1 已正式发布](https://github.com/wayslog/invest/releases/tag/v0.6.1)并部署至 Linux，
+修复服务 CLI 的时间输出错误；原账户显式迁移后，日结、对账、备份、Telegram 及健康检查通过，
+两个 systemd 定时器已启用。实际观察为 **1/60 日**，首次故障和恢复证据保留；
+见 [运行与部署](docs/operations.md)。Linux 是唯一写入端，本地原账户副本已停止写入。
 失败候选的复盘及新未来验证方案见 [R1 复盘](docs/research/r1-postmortem.md)，
 外部账户条件见 [T09 核查](docs/access/t09.md)。
 
