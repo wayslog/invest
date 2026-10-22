@@ -1,0 +1,50 @@
+name: M3 runtime observation
+
+on:
+  schedule:
+    - cron: "43 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: invest-runtime-observation
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.23"
+          enable-cache: true
+      - run: uv sync --locked --no-dev --python 3.12
+      - name: Observe the host, publish progress and notify failures or recovery
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
+          INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
+          INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
+          INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
+          INVEST_TELEGRAM_BOT_TOKEN: ${{ secrets.INVEST_TELEGRAM_BOT_TOKEN }}
+          INVEST_TELEGRAM_ALLOWED_UID: ${{ secrets.INVEST_TELEGRAM_ALLOWED_UID }}
+        run: uv run --locked --no-dev python deploy/monitor.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m3-operations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/operations/m3-status.parquet
+          retention-days: 90
+          if-no-files-found: warn

@@ -30,5 +30,7 @@
 - The user fully trusts the configured deployment host. Do not add host-key pinning,
   account-package signatures or certificates, or transport-checksum gates.
   Continue preserving account identity, financial reconciliation and history.
+- Keep backups on the deployment host only, per the user decision. Do not add
+  off-host backup storage, synchronization or related setup requirements.
 - README and research documentation are written in Chinese; code identifiers are
   English. Keep the initial framework small and add integrations when requested.

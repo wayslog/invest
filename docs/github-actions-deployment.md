@@ -92,7 +92,8 @@ GitHub 托管 runner 无法读取云工作区里未提交的私人文件，因�
 成功凭据在 `/var/lib/invest/operations/deployments/<run-id>-<attempt>.parquet`，
 记录 Git commit、源码/引擎 SHA、账户 ID、交接 head、首轮日结后 head 和权威路径。
 源码 SHA 仅作自动记录，不作为部署门禁；账户引擎绑定和资金对账继续按原逻辑运行。
-这些私人数据不进入 Actions 日志或 artifacts。Actions 只上传经过测试的公开源码包。
+这些私人数据不进入 Actions 日志或 artifacts。部署作业只上传经过测试的公开源码包；
+运行检查作业另存运行状态和观察计数的 Parquet 摘要表。
 
 ## 失败与升级
 
@@ -123,5 +124,8 @@ active 的现金观察账户；策略账户、已暂停/停止、漏账或风险
 若迁移已提交而恢复未完成，按迁移记录核查后手动继续，不能把一般暂停当作部署可自动恢复。
 未完成首次交接前，本地账户仍是权威来源；完成交接后，主机为唯一写入端。
 
-本机备份和本机健康 timer 的边界仍见运行说明；独立存储备份和整机可用性监控
-需要另外接入，GitHub 部署成功不代表这两项已经配置。
+本机备份继续由日结服务维护。按用户决定不接入外部备份存储。
+独立的 [monitor.yml](../.github/workflows/monitor.yml) 每小时读取主机运行状态，
+在 Actions Summary 展示日报，保存 Parquet 状态表，并通过既有 Telegram 通道发送异常及恢复通知。
+工作流无需新增 secret，也不部署或迁移账户；手动运行会同时发送一次通知通道自检。
+检查主机、账户对账、本机备份、心跳与两个 timer；详细口径见[运行说明](operations.md)。

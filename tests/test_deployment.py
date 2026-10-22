@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -285,7 +286,10 @@ def test_inspection_summarizes_actual_receipt_schemas_without_exporting_account_
     operations = tmp_path / "operations"
     for name in ("runs", "alerts", "health", "deployments"):
         (operations / name).mkdir(parents=True)
-    stamp = pa.scalar("2026-10-21T11:30:00+00:00").cast(pa.timestamp("us", tz="UTC")).as_py()
+    stamp = datetime.now(UTC)
+    backup = tmp_path / "backups/current"
+    backup.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([{"head": "private-head"}]), backup / "backup.parquet")
     run = {
         "finished_at": stamp,
         "outcome": "ok",
@@ -294,11 +298,22 @@ def test_inspection_summarizes_actual_receipt_schemas_without_exporting_account_
         "account_id": "private-account",
         "head": "private-head",
         "error": "private-log",
+        "backup": str(backup),
+        "updated": True,
     }
     pq.write_table(
-        pa.Table.from_pylist([run], schema=SERVICE_SCHEMA), operations / "runs/0.parquet"
+        pa.Table.from_pylist([run], schema=SERVICE_SCHEMA), operations / "runs/1.parquet"
     )
-    alert = {"recorded_at": stamp, "delivery": "sent", "detail": "private-message"}
+    old = {**run, "finished_at": stamp - timedelta(hours=25), "outcome": "error"}
+    pq.write_table(
+        pa.Table.from_pylist([old], schema=SERVICE_SCHEMA), operations / "runs/0.parquet"
+    )
+    alert = {
+        "recorded_at": stamp,
+        "kind": "systemd",
+        "delivery": "sent",
+        "detail": "private-message",
+    }
     pq.write_table(
         pa.Table.from_pylist([alert], schema=ALERT_SCHEMA), operations / "alerts/0.parquet"
     )
@@ -316,6 +331,7 @@ def test_inspection_summarizes_actual_receipt_schemas_without_exporting_account_
         "last_session": "2026-10-20",
         "account_id": "private-account",
         "cash": "5000",
+        "head": "private-head",
     }
     monkeypatch.setattr("invest.forward.forward_status", lambda path: status)
     monkeypatch.setattr("invest.forward.verify_forward", lambda path: {"head": "private-head"})
@@ -327,6 +343,10 @@ def test_inspection_summarizes_actual_receipt_schemas_without_exporting_account_
     assert '"outcome": "ok"' in output
     assert '"delivery": "sent"' in output
     assert '"healthy": true' in output
+    assert '"matches_current": true' in output
+    assert '"systemd_failures": 1' in output
+    assert '"failed_runs": 0' in output
+    assert '"runs": 1' in output
     assert "deployments: no records" in output
     assert "private-" not in output and "5000" not in output
 
