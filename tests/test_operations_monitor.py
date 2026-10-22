@@ -106,11 +106,17 @@ def test_operation_failures_and_overdue_sessions_need_attention(
 def test_completed_observation_does_not_require_live_timers(monitor: ModuleType) -> None:
     now = datetime(2027, 1, 16, 12, tzinfo=UTC)
     source = snapshot(now)
-    source["Account"].update(operations="completed", sessions=60, coverage_met=True)
+    source["Account"].update(
+        operations="completed", sessions=60, coverage_met=True, missing_sessions=1
+    )
     source["Timers"] = dict.fromkeys(source["Timers"], False)
     source["runs"]["finished_at"] = (now - timedelta(days=1)).isoformat()
     source["health"]["recorded_at"] = (now - timedelta(days=1)).isoformat()
-    assert monitor.assess(source, now)["healthy"]
+    row = monitor.assess(source, now)
+    assert row["healthy"] and row["missing_sessions"] == 1
+    summary = monitor.markdown(row)
+    assert "观察窗口 | 已结束" in summary
+    assert "未核算会话" not in summary and "下次数据可采集时间" not in summary
 
 
 def test_transient_overlap_is_retried_without_changing_the_account(

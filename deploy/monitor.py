@@ -185,8 +185,14 @@ def markdown(row: dict[str, Any]) -> str:
             f"| 观察进度 | {row['sessions']}/{row['registered_sessions']} 个交易日 |",
             f"| 最新核算交易日 | {row['last_session']} |",
             f"| 观察结束交易日 | {row['observation_end_session']} |",
-            f"| 下次数据可采集时间 | {local(row['next_capture_after'])} |",
-            f"| 未核算会话 | {row['missing_sessions']} |",
+            *(
+                ["| 观察窗口 | 已结束 |"]
+                if row["operations"] == "completed"
+                else [
+                    f"| 下次数据可采集时间 | {local(row['next_capture_after'])} |",
+                    f"| 未核算会话 | {row['missing_sessions']} |",
+                ]
+            ),
             f"| 最新日结完成时间 | {local(row['last_run_finished_at'])} |",
             f"| 本机备份 | {'对应当前账户' if row['backup_matches_current'] else '需要处理'} |",
             f"| 过去 24 小时运行 / 新日结 | {row['runs_24h']} / {row['updated_runs_24h']} |",
