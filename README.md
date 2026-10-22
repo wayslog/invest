@@ -20,9 +20,10 @@ SPY 待支付分红的采集范围已修复，真实现金观察账户已登记�
 日结及备份已实现，新增 [GitHub Actions 部署](docs/github-actions-deployment.md)，
 [0.6.1 已正式发布](https://github.com/wayslog/invest/releases/tag/v0.6.1)并部署至 Linux，
 修复服务 CLI 的时间输出错误；原账户显式迁移后，日结、对账、备份、Telegram 及健康检查通过，
-两个 systemd 定时器已启用。实际观察为 **1/60 日**，首次故障和恢复证据保留；
+两个 systemd 定时器已启用。2026-10-22 11:33 验收时实际观察为 **1/60 日**，首次故障和恢复证据保留；
 见 [运行与部署](docs/operations.md)。2026-10-22 主机核对确认夜间持续运行正常；
 Actions 独立监控提供北京时间日报和 Parquet 状态表，复用既有 Telegram 通道通知异常及恢复。
+最新观察进度见 [运行日报](https://github.com/wayslog/invest/actions/workflows/monitor.yml)。
 仅保留本机备份。Linux 是唯一写入端，本地原账户副本已停止写入。
 失败候选的复盘及新未来验证方案见 [R1 复盘](docs/research/r1-postmortem.md)，
 外部账户条件见 [T09 核查](docs/access/t09.md)。
