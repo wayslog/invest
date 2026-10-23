@@ -20,7 +20,7 @@ from uuid import uuid4
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-CLIENT_ID = 71  # Same dedicated nonzero client as the M4 adapter.
+CLIENT_ID = 71  # Dedicated diagnostic client; execution clients must use another ID.
 PROTOCOL = b"v157..178"  # Same negotiated range as the selected ib_async 2.1.0.
 SCHEMA = pa.schema(
     [

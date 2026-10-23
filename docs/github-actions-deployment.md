@@ -119,6 +119,7 @@ Actions 仅显示运行摘要。此操作只读账户，不运行日结或修改
 从 `main` 执行 `operation=ibkr-probe` 可在 VPS 本机检查 `127.0.0.1:4002`。
 先检查 TCP/协议握手，再使用独立 Python 3.12 环境中的 `ib_async==2.1.0` 建立 API 会话，
 核对账户为 Paper。仅启动非零客户端会话，不发送订单、撤单或自动绑定请求。
+诊断保留 `clientId=71`，后续执行适配器使用其他独立 ID，避免并发连接冲突。
 SDK 环境使用 `uv run --no-project`，不改动冻结 M3 的依赖。
 回执和 SDK 调试信息以 Parquet/Zstandard 保存在主机的
 `/var/lib/invest/operations/ibkr-probes/`，Actions 不显示账户号码。
