@@ -1,6 +1,6 @@
 # Linux 每日运行与迁移
 
-当前实现版本 0.7.1；旧账户最后验收版本为 0.6.1。systemd 配置在 [deploy](../deploy/)，
+当前实现及部署版本 0.7.1；旧账户最后验收版本为 0.6.1。systemd 配置在 [deploy](../deploy/)，
 本地配置示例为 [operations.toml](../configs/operations.toml)。
 部署是否已启动，以 [M3 阶段记录](milestones/m3.md) 和目标主机的验收凭据为准。
 代码和部署包准备完成本身不代表定时器已经在主机运行。
@@ -11,6 +11,8 @@ GitHub Actions 可执行连接预检与受控部署，配置及账户交接见
 [IBKR 现金观察](ibkr-cash-observation.md)使用 `backend="ibkr_cash"`，仅采集 IBKR 只读数据，
 并使用独立的 5,000 美元虚拟现金账户和新 60 日窗口；旧 2/60 账户与运维记录归档。
 本次切换通过 Actions `operation=restart` 完成，实际主机验收状态以阶段记录为准。
+2026-10-23 17:23（北京时间）核查已通过：新账户 0/60、来源 ibkr、运行 active，
+对账、本机备份、Telegram 和两个 timer 正常；窗口为 2026-10-23 至 2027-01-20。
 以下保留旧 `legacy_forward` 的迁移说明，不能用它初始化新的 IBKR 观察。
 
 0.6.1 修复日结和健康 CLI 对时间字段的 JSON 输出。0.6.0 的主机日结曾已成功提交、
