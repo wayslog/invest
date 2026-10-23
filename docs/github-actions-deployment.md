@@ -4,6 +4,10 @@ Actions 负责连接预检、测试、构建和发布；持久 Linux 主机继�
 账户、行情、备份和运行凭据留在 `/var/lib/invest`。不把每日账户写入任务放到临时 runner，
 也不以 GitHub 定时触发的时间代替真实观察时间。
 
+以下配置对应当前 `0.6.1` 的旧 Alpaca 采集与冻结 M3 运行。
+[IBKR 唯一可信来源](data-sources.md)的接入在 M4 推进；当前没有部署 IBKR 网关或采集器，
+不能把既有 APCA 凭据或运行日报视为 IBKR 接入证据。
+
 工作流为 [deploy.yml](../.github/workflows/deploy.yml)，只允许从 `main` 手动触发，
 同一时间只执行一次生产部署。构建复用 [CI](../.github/workflows/ci.yml)，只有
 静态检查、完整测试、两个离线演示和打包全部通过，才会进入持有生产凭据的部署 job。
@@ -38,7 +42,7 @@ SSH、行情读取和 Telegram 的实际送达已经验证；凭据清单 API �
 | --- | --- |
 | `INVEST_SSH_HOST` | 主机地址 |
 | `INVEST_SSH_PRIVATE_KEY` | 供 runner 使用的独立、无交互解密的 SSH 私钥 |
-| `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | 行情读取凭据 |
+| `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | 当前 0.6.1 旧 Alpaca 采集凭据，供冻结观察继续运行 |
 | `INVEST_TELEGRAM_BOT_TOKEN`、`INVEST_TELEGRAM_ALLOWED_UID` | 通知凭据及唯一私人收件人 UID |
 
 Environment variables 可选 `INVEST_SSH_USER=root`、`INVEST_SSH_PORT=22`。

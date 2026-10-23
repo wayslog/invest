@@ -3,7 +3,9 @@
 个人美股投资研究框架，使用 **Python 3.12 + uv + Parquet**。
 当前提供单标的日线 paper 账户，以及共享现金的多 ETF 策略研究：
 趋势/轮动、次日模拟成交、资金与风险核算、基准、样本外评价和可复现报告。演示和测试无需账户或密钥；
-真实行情采集使用 Alpaca 的只读数据 API。
+**IBKR 是项目唯一可信的外部数据源**：行情、账户、订单、成交和费用统一以 IBKR 记录为准。
+当前 `0.6.1` 的采集器及线上冻结观察仍使用 Alpaca；IBKR 只完成 SDK 离线检查，接入尚待实现。
+现有数据保留原来源，用于历史复现和既有运维观察；新来源政策见 [数据来源决策](docs/data-sources.md)。
 
 项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
 M0 工程原型已通过验收，见 [M0 验收记录](docs/milestones/m0.md)。
@@ -26,7 +28,10 @@ Actions 独立监控提供北京时间日报和 Parquet 状态表，复用既有
 最新观察进度见 [运行日报](https://github.com/wayslog/invest/actions/workflows/monitor.yml)。
 仅保留本机备份。Linux 是唯一写入端，本地原账户副本已停止写入。
 失败候选的复盘及新未来验证方案见 [R1 复盘](docs/research/r1-postmortem.md)，
-外部账户条件见 [T09 核查](docs/access/t09.md)。
+外部账户条件见 [T09 核查](docs/access/t09.md)。M4 先通过 IB Gateway/TWS 接入 IBKR
+行情与账户只读数据，再验证 Paper 订单状态和成交核对；首选 SDK 为 `ib_async`。
+订阅按实际需要选择并记录成本，全免费不是选型前提。嘉信保留为后续可选接入，
+当前计划及未完成条件见 [IBKR 接入说明](docs/access/ibkr.md)。
 
 ## 快速开始
 
@@ -105,7 +110,10 @@ make research-demo
 `paper` 更新前强制检查日历、数据完整性和独立对账。日线开盘价仍是模拟成交代理，
 没有盘口、税费、资金结算或券商订单状态模拟；真实数据批次仅用于有明确限制的历史研究。
 
-## 真实历史数据流程
+## 既有真实数据流程（Alpaca，历史复现）
+
+以下命令是当前已实现的 Alpaca 采集与历史验收流程，不是 IBKR 接口。
+IBKR 原始行情和账户数据的捕获、规范化及接入命令将在 M4 实现，不能只改来源标签来替代。
 
 通过环境安全设置提供 `APCA_API_KEY_ID` 和 `APCA_API_SECRET_KEY`；云环境的凭据目的域名
 只需 `data.alpaca.markets`。不要把值写入仓库、命令行或聊天。此流程不会提交券商订单。
@@ -148,7 +156,7 @@ M3 使用独立的 `forward-*` 命令记录真实接收/决策时间；引擎冻
 
 - 数据格式及复权/分红口径：[Parquet 数据约定](docs/data.md)。
 - 日历与质量检查：[使用方法和检查边界](docs/data.md#交易日历与质量报告)。
-- 真实行情来源：[M1 数据源评估记录](docs/data-sources.md)。
+- 唯一可信来源与既有验收：[数据来源决策及历史记录](docs/data-sources.md)。
 - 账户状态、默认研究参数、限制及验收范围：[Paper 账户说明](docs/paper.md)。
 - 模块划分及后续方向：[架构说明](docs/architecture.md)。
 - `configs/demo.toml` 中的参数是工程演示默认值，尚未经过有效性验证。

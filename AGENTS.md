@@ -12,6 +12,11 @@
 - Keep `pyproject.toml` and `uv.lock` consistent when changing dependencies.
 - Market data, ledgers and result tables use typed Parquet with Zstandard compression.
   Configuration is TOML; do not add text-table data paths.
+- IBKR is the sole authoritative external source for market data, accounts, orders,
+  fills and costs. Keep other providers only as labeled historical/reference data;
+  do not silently substitute or merge them into IBKR records. The existing Alpaca
+  implementation and frozen observations are legacy evidence, not an implemented
+  IBKR connection. Preserve their original provenance, registrations and journals.
 - Paper fills must follow the decision session. Preserve Decimal accounting,
   append-only history and restart idempotency. Keep synthetic and real data explicit.
 - Account snapshots are tied to engine source and parameters. After changing engine
