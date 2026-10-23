@@ -128,6 +128,13 @@ SDK 环境使用 `uv run --no-project`，不改动冻结 M3 的依赖。
 其独立 socket 探针未能建立会话的旧回执保留；后续 socket 检查只负责协议握手，
 账户会话统一由选定 SDK 验证。
 
+`operation=ibkr-capture` 先运行完整 CI，安装测试源码到 `/opt/invest-ibkr/releases/<commit>/`，
+使用隔离 SDK 锁读取账户及 SPY/XLF 日线、分钟线和报价。回执保存在
+`/var/lib/invest/ibkr/captures/`，完整 SDK 日志在其相邻 `logs/` 目录。
+该操作不切换 M3 发布、迁移原账户或更改 systemd 定时器。
+[0.7.0 首轮只读验收](https://github.com/wayslog/invest/actions/runs/39926095709)通过，
+实际范围与后续订单验收见 [M4 实施记录](milestones/m4.md)。
+
 普通 `operation=deploy` 只接受**账户引擎指纹不变**的更新，仍拒绝版本不匹配或暂停账户。
 明确需要切换引擎时，可选择 `operation=migrate` 并填写 `migration_reason`，不需要额外 secret
 或手填账户 ID/head。该操作仍先完整测试构建，只支持已经交接到主机、账务最新、运行和风险均
