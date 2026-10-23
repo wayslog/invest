@@ -9,12 +9,15 @@ for unit in invest-forward.service invest-forward.timer invest-forward-health.se
 done
 runuser -u invest -- env MPLCONFIGDIR=/var/lib/invest/cache/matplotlib \
   "$current/.venv/bin/python" - <<'PY'
+import ast
 import json
+import re
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import invest
 
 from invest.forward import forward_status, verify_forward
 
@@ -83,4 +86,35 @@ window = {
     "notification_failures": sum(row["delivery"] == "failed" for row in alerts),
 }
 print("Window:", json.dumps(window, sort_keys=True))
+
+# Only report matching public source literals; never echo a private error string.
+error = str(latest.get("runs", {}).get("error", ""))
+matches = []
+for source in Path(invest.__file__).parent.glob("*.py"):
+    for node in ast.walk(ast.parse(source.read_text())):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value.strip()
+            if 12 <= len(text) <= 240 and text in error:
+                matches.append((len(text), source.name, text))
+matched = max(matches, default=(0, "", "unclassified"))
+print("Run diagnostic:", json.dumps({"source": matched[1], "public_message": matched[2]}, sort_keys=True))
+
+for kind in ("daily", "minute"):
+    captures = sorted(Path("/var/lib/invest/ibkr/captures", kind).glob("*/capture.parquet"))
+    if not captures:
+        continue
+    folder = captures[-1].parent
+    manifest = pq.read_table(captures[-1]).to_pylist()[0]
+    account_number = manifest["account"]
+    messages = []
+    for row in pq.read_table(folder / "raw.parquet").to_pylist():
+        if row["method"] == "errorEvent" and not row["complete"]:
+            body = json.loads(row["payload"])
+            message = str(body["message"]).replace(account_number, "<paper-account>")
+            message = re.sub(r"\bDU[A-Z0-9_]+\b", "<paper-account>", message)
+            messages.append({"code": body["code"], "message": message})
+    print("IBKR " + kind + ":", json.dumps({
+        "captured_at": manifest["captured_at"], "complete": manifest["complete"],
+        "errors": messages,
+    }, default=str, sort_keys=True))
 PY
