@@ -12,7 +12,8 @@ from zoneinfo import ZoneInfo
 from invest.ibkr_data import Capture, decoded
 from invest.ibkr_models import BrokerSnapshot, IBKRConfig, Intent, decimal, number, timestamp
 
-INFORMATIONAL_CODES = {2104, 2106, 2107, 2108, 2158, 10167}
+# Farm startup is informational; quote/history completeness is checked separately.
+INFORMATIONAL_CODES = {2104, 2106, 2107, 2108, 2119, 2158, 10167}
 
 
 def serializable(value: Any) -> Any:

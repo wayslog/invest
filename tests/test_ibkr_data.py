@@ -156,6 +156,7 @@ class FakeIB:
         self.calls: list[str] = []
         self.fail_positions = False
         self.fail_history = False
+        self.market_connecting = False
 
     def connect(self, host: str, port: int, **kwargs: Any) -> None:
         assert kwargs["clientId"] == 72
@@ -212,6 +213,8 @@ class FakeIB:
 
     def reqMarketDataType(self, value: int) -> None:
         assert value == 3
+        if self.market_connecting:
+            self.errorEvent.callback(-1, 2119, "Market data farm is connecting:usfarm")
 
     def reqMktData(self, contract: Contract, *args: Any) -> Any:
         ticker = SimpleNamespace(
@@ -294,3 +297,21 @@ def test_intraday_utc_session_and_completion_are_checked() -> None:
     assert not any(r["status"] == "error" for r in quality(capture))
     capture.historical[0]["bar_at"] = datetime(2024, 1, 2, 3, tzinfo=UTC)
     assert "intraday_timestamp" in {r["check"] for r in quality(capture)}
+
+
+def test_market_farm_startup_is_a_notice_while_missing_data_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("invest.ibkr_gateway.version", lambda name: "2.1.0")
+    ib = FakeIB()
+    ib.market_connecting = True
+    sdk = SimpleNamespace(IB=lambda: ib, Stock=Contract, ExecutionFilter=Filter)
+    with IBKRGateway(IBKRConfig(), sdk) as gateway:
+        capture = gateway.capture()
+    checks = quality(capture)
+    assert not any(r["status"] == "error" for r in checks)
+    assert "market_data_farm_startup" in {r["check"] for r in checks}
+    ib.callback = False
+    with IBKRGateway(IBKRConfig(), sdk) as gateway:
+        capture = gateway.capture()
+    assert any(r["status"] == "error" and r["check"] == "quote_type" for r in quality(capture))

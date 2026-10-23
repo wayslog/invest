@@ -1,5 +1,6 @@
 """Typed IBKR capture batches; adjusted bars deliberately are not invest.bars.v1."""
 
+import json
 import shutil
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -204,6 +205,16 @@ def quality(capture: Capture) -> list[dict[str, Any]]:
     snap, config = capture.snapshot, capture.config
     if capture.errors:
         add("error", "capture_requests", "", "; ".join(capture.errors))
+    if any(
+        row["method"] == "errorEvent" and json.loads(row["payload"]).get("code") == 2119
+        for row in capture.raw
+    ):
+        add(
+            "warning",
+            "market_data_farm_startup",
+            "",
+            "IBKR reported farm startup; returned quotes and history are checked independently",
+        )
     if snap.source not in {"ibkr", "synthetic"} or not snap.account.startswith("DU"):
         raise ValueError("IBKR captures require a Paper account and explicit source")
     if not snap.complete:
