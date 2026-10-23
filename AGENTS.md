@@ -10,8 +10,22 @@
 - Put reusable logic in `src/invest/`. Add behavioral tests for new calculations
   and data validation. State units, date conventions and adjustment assumptions.
 - Keep `pyproject.toml` and `uv.lock` consistent when changing dependencies.
-- Market data, ledgers and result tables use typed Parquet with Zstandard compression.
-  Configuration is TOML; do not add text-table data paths.
+- Authoritative tabular data and formal result tables use typed Parquet with
+  Zstandard compression, including market data, factor and signal tables, actions,
+  and ledgers. Configuration is TOML; do not add CSV or other text-table business
+  data paths.
+- Third-party libraries such as Qlib may use rebuildable native-format caches,
+  including binary features and text calendars or instrument lists. Derive them
+  from authoritative Parquet snapshots and recorded configuration; keep them in
+  isolated, Git-ignored directories under data/cache/. Record input snapshots,
+  converter and library versions, relevant parameters, units and adjustment rules.
+  Isolate caches when those inputs change. Caches are disposable derived data, not
+  independent business records or a second authoritative store. Never reconstruct
+  Decimal ledgers from floating-point research caches.
+- Preserve historical accounts and research records, including their identity,
+  registrations, provenance, journals, risk history, frozen inputs and results.
+  Cache generation, cleanup or rebuilding must not overwrite, relabel or delete
+  those records, reset capital or risk state, or alter out-of-sample status.
 - IBKR is the sole authoritative external source for market data, accounts, orders,
   fills and costs. Keep other providers only as labeled historical/reference data;
   do not silently substitute or merge them into IBKR records. The existing Alpaca
