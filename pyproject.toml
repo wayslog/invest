@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wayslog-invest"
-version = "0.6.1"
+version = "0.7.0"
 description = "A personal research framework for US equity investing."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 invest = "invest.cli:main"
+invest-ibkr = "invest.ibkr_cli:main"
 
 [dependency-groups]
 dev = [
@@ -40,6 +41,7 @@ include = [
     "/docs",
     "/configs",
     "/deploy",
+    "/integrations",
     "/pyproject.toml",
     "/README.md",
     "/Makefile",

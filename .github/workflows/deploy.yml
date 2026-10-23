@@ -6,7 +6,7 @@ on:
       operation:
         description: First check connectivity, then deploy the tested main commit
         type: choice
-        options: [preflight, inspect, ibkr-probe, deploy, migrate]
+        options: [preflight, inspect, ibkr-probe, ibkr-capture, deploy, migrate]
         default: preflight
       migration_reason:
         description: Required only for an explicitly requested cash-account engine migration
@@ -53,11 +53,12 @@ jobs:
 
   build:
     needs: trusted-branch
-    if: inputs.operation == 'deploy' || inputs.operation == 'migrate'
+    if: inputs.operation == 'deploy' || inputs.operation == 'migrate' || inputs.operation == 'ibkr-capture'
     uses: ./.github/workflows/ci.yml
 
   deploy:
     needs: build
+    if: inputs.operation == 'deploy' || inputs.operation == 'migrate'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
@@ -129,3 +130,30 @@ jobs:
           INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
           INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
         run: python deploy/github_actions.py ibkr-probe
+
+  ibkr-capture:
+    needs: build
+    if: inputs.operation == 'ibkr-capture'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: tested-source
+          path: release-artifact
+      - name: Capture IBKR data in the isolated M4 runtime
+        env:
+          INVEST_SSH_HOST: ${{ secrets.INVEST_SSH_HOST }}
+          INVEST_SSH_PRIVATE_KEY: ${{ secrets.INVEST_SSH_PRIVATE_KEY }}
+          INVEST_SSH_USER: ${{ vars.INVEST_SSH_USER || 'root' }}
+          INVEST_SSH_PORT: ${{ vars.INVEST_SSH_PORT || '22' }}
+          INVEST_DEPLOY_COMMIT: ${{ github.sha }}
+          INVEST_DEPLOY_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: python deploy/github_actions.py ibkr-capture --artifact release-artifact

@@ -5,7 +5,8 @@
 人工样例可直接走本地 Parquet 输入，但同样经过日历和对账检查。
 
 目标来源统一为 **IBKR**，具体政策见 [数据来源决策](data-sources.md)。
-M4 的目标数据流如下，相关采集器和订单适配器尚未实现：
+M4 的目标数据流如下。`0.7.0` 已实现独立采集器、执行日志及离线演练，
+研究引擎准入、正式资金映射及实际订单联调仍待验收，见 [M4 使用说明](ibkr-paper.md)：
 
 ```mermaid
 flowchart LR
@@ -25,6 +26,9 @@ flowchart LR
 | 模块 | 职责 |
 | --- | --- |
 | market.py | 原始价格、日期、来源和企业行动的数据校验 |
+| ibkr_gateway.py / ibkr_data.py | IBKR 只读接口、解码回执、独立调整价格模式及质量检查 |
+| ibkr_execution.py / ibkr_store.py | Paper 执行意图、持久化状态恢复、确认成交与费用增量核对 |
+| ibkr_cli.py / ibkr_synthetic.py | 手工采集/执行命令及明确 synthetic 的离线演练 |
 | alpaca.py | 固定行情端点的只读请求、完整分页、精确金额和企业行动映射 |
 | datasets.py | 不可变原始/标准化批次、失败隔离、文件校验和离线复现准入 |
 | quality.py | 独立的 XNYS 日历、时间截点与完整性检查，生成 Parquet 质量报告 |

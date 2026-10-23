@@ -31,6 +31,44 @@ release = load_tool("release")
 runner = load_tool("github_actions")
 
 
+def test_ibkr_capture_transports_tested_source_and_keeps_financial_deploy_separate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name, value in {
+        "INVEST_SSH_HOST": "host.example",
+        "INVEST_SSH_PRIVATE_KEY": "private-key",
+        "INVEST_DEPLOY_COMMIT": "c" * 40,
+        "INVEST_DEPLOY_RUN": "555-1",
+    }.items():
+        monkeypatch.setenv(name, value)
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "source.tar.gz").write_bytes(b"tested source")
+    calls = []
+
+    def run(command: list[str], label: str, **kwargs: Any) -> bytes:
+        calls.append(label)
+        assert "private-key" not in " ".join(command)
+        if label == "Capture IBKR Paper data":
+            assert kwargs["data"] == (ROOT / "deploy/ibkr_capture.sh").read_bytes()
+            return b'{"complete":true,"kind":"daily"}\n{"complete":true,"kind":"minute"}\n'
+        return b""
+
+    monkeypatch.setattr(runner, "run_quiet", run)
+    runner.execute("ibkr-capture", artifact)
+    assert calls == [
+        "Host preflight",
+        "Prepare M4 staging",
+        "Transfer tested M4 source",
+        "Capture IBKR Paper data",
+        "Clean M4 staging",
+    ]
+    assert '"kind":"daily"' in capsys.readouterr().out
+    script = (ROOT / "deploy/ibkr_capture.sh").read_text()
+    assert "/opt/invest-ibkr/releases" in script and "systemctl" not in script
+    assert "forward-migrate" not in script and "forward-run" not in script
+
+
 def bundle(tmp_path: Path, members: list[tarfile.TarInfo]) -> Path:
     output = tmp_path / "account.tar.gz"
     with tarfile.open(output, "w:gz") as archive:

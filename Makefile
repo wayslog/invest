@@ -2,8 +2,9 @@ UV ?= uv
 DEMO_ACCOUNT ?= reports/paper-demo
 M2_DEMO_DIR ?= reports/m2-demo
 M3_DEMO_DIR ?= reports/m3-demo
+M4_DEMO_DIR ?= reports/m4-demo
 
-.PHONY: install check lint typecheck test format build demo research-demo forward-demo
+.PHONY: install check lint typecheck test format build demo research-demo forward-demo ibkr-install ibkr-demo
 
 install:
 	$(UV) sync --locked --python 3.12
@@ -39,3 +40,9 @@ research-demo:
 
 forward-demo:
 	$(UV) run --locked python examples/forward_drill.py --output $(M3_DEMO_DIR)
+
+ibkr-install:
+	$(UV) sync --project integrations/ibkr --locked --python 3.12
+
+ibkr-demo:
+	$(UV) run --locked invest-ibkr demo --output $(M4_DEMO_DIR)

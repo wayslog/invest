@@ -153,6 +153,41 @@ def execute(
             return
         if operation == "migrate" and account is not None:
             raise ValueError("Migration must use the existing authoritative host account")
+        if operation == "ibkr-capture":
+            commit = required("INVEST_DEPLOY_COMMIT", r"[0-9a-f]{40}")
+            run = required("INVEST_DEPLOY_RUN", r"[0-9]+-[0-9]+")
+            archives = list(artifact.glob("*.tar.gz")) if artifact else []
+            if len(archives) != 1:
+                raise ValueError("Expected the tested source archive for M4")
+            incoming = f"/opt/invest-ibkr/incoming/{run}"
+            run_quiet([*ssh, f"umask 077; mkdir -p {incoming}"], "Prepare M4 staging")
+            try:
+                run_quiet(
+                    [
+                        "scp",
+                        "-q",
+                        *options,
+                        "-P",
+                        port,
+                        str(archives[0]),
+                        f"{target}:{incoming}/source.tar.gz",
+                    ],
+                    "Transfer tested M4 source",
+                )
+                command = "bash -s -- " + " ".join(shlex.quote(v) for v in (incoming, commit, run))
+                summary = run_quiet(
+                    [*ssh, command],
+                    "Capture IBKR Paper data",
+                    data=(root / "ibkr_capture.sh").read_bytes(),
+                    timeout=600,
+                )
+                print(summary.decode(), end="")
+                rows = [json.loads(line) for line in summary.decode().splitlines() if line.strip()]
+                if len(rows) != 2 or not all(row.get("complete") for row in rows):
+                    raise RuntimeError("IBKR capture retained incomplete data; see quality summary")
+            finally:
+                run_quiet([*ssh, f"rm -rf -- {incoming}"], "Clean M4 staging", timeout=45)
+            return
         commit = required("INVEST_DEPLOY_COMMIT", r"[0-9a-f]{40}")
         run = required("INVEST_DEPLOY_RUN", r"[0-9]+-[0-9]+")
         archives = list(artifact.glob("*.tar.gz")) if artifact else []
@@ -233,7 +268,8 @@ def execute(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "operation", choices=["preflight", "inspect", "ibkr-probe", "deploy", "migrate"]
+        "operation",
+        choices=["preflight", "inspect", "ibkr-probe", "ibkr-capture", "deploy", "migrate"],
     )
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--account", type=Path, help="Optional existing local account to transfer")

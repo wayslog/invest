@@ -1,0 +1,14 @@
+# Gateway Paper on the same host; diagnostic client 71 is reserved separately.
+host = "127.0.0.1"
+port = 4002
+client_id = 72
+timeout = 15
+symbols = ["SPY", "XLF"]
+duration = "1 Y"
+bar_size = "1 day"
+what_to_show = "TRADES"
+use_rth = true
+market_data_type = 3
+quote_wait = 5
+max_order_notional = "1000"
+max_total_notional = "5000"

@@ -27,6 +27,7 @@ jobs:
       - run: make check
       - run: make demo
       - run: make forward-demo
+      - run: make ibkr-demo
       - run: make build
       - name: Pass source code to the deployment job
         if: github.event_name == 'workflow_dispatch'

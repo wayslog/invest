@@ -34,6 +34,8 @@ Actions 独立监控提供北京时间日报和 Parquet 状态表，复用既有
 订阅按实际需要选择并记录成本，全免费不是选型前提。嘉信保留为后续可选接入，
 当前计划及未完成条件见 [IBKR 接入说明](docs/access/ibkr.md)。
 无桌面 VPS 的安装与首次登录见 [IB Gateway 安装说明](docs/access/ibkr-gateway.md)。
+M4 的 `0.7.0` 实现、独立 SDK 环境、Parquet 采集、执行演练与恢复命令见
+[M4 使用说明](docs/ibkr-paper.md)及[验收进度](docs/milestones/m4.md)。
 
 ## 快速开始
 
@@ -115,7 +117,8 @@ make research-demo
 ## 既有真实数据流程（Alpaca，历史复现）
 
 以下命令是当前已实现的 Alpaca 采集与历史验收流程，不是 IBKR 接口。
-IBKR 原始行情和账户数据的捕获、规范化及接入命令将在 M4 实现，不能只改来源标签来替代。
+IBKR 的独立采集命令与执行演练已在 `0.7.0` 实现，见 [M4 使用说明](docs/ibkr-paper.md)。
+新表保留自己的调整口径与模式，不通过修改来源标签来替代旧输入。
 
 通过环境安全设置提供 `APCA_API_KEY_ID` 和 `APCA_API_SECRET_KEY`；云环境的凭据目的域名
 只需 `data.alpaca.markets`。不要把值写入仓库、命令行或聊天。此流程不会提交券商订单。

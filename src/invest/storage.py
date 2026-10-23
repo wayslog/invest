@@ -17,6 +17,7 @@ from filelock import FileLock, Timeout
 from invest.config import PaperConfig
 from invest.datasets import verify_dataset
 from invest.dividends import audit_dividends
+from invest.engine import engine_digest as engine_digest
 from invest.market import MONEY, read_bars
 from invest.paper import simulate
 from invest.quality import audit_bars
@@ -28,14 +29,6 @@ from invest.report import write_report
 class RunLocation:
     directory: Path
     updated: bool
-
-
-def engine_digest() -> str:
-    digest = hashlib.sha256()
-    for source in sorted(Path(__file__).parent.glob("*.py")):
-        digest.update(source.name.encode())
-        digest.update(source.read_bytes())
-    return digest.hexdigest()
 
 
 def update_paper(
