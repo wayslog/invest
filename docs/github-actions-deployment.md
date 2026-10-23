@@ -5,8 +5,9 @@ Actions 负责连接预检、测试、构建和发布；持久 Linux 主机继�
 也不以 GitHub 定时触发的时间代替真实观察时间。
 
 以下配置对应当前 `0.6.1` 的旧 Alpaca 采集与冻结 M3 运行。
-[IBKR 唯一可信来源](data-sources.md)的接入在 M4 推进；当前没有部署 IBKR 网关或采集器，
-不能把既有 APCA 凭据或运行日报视为 IBKR 接入证据。
+[IBKR 唯一可信来源](data-sources.md)的接入在 M4 推进；用户已在 VPS 配置 Gateway，
+2026-10-23 15:34（北京时间）通过独立 SDK 的只读 API 会话检查，返回一个 Paper 账户。
+金融账户服务仍未切换到 IBKR 采集器；既有 APCA 凭据或运行日报不作为 IBKR 接入证据。
 
 工作流为 [deploy.yml](../.github/workflows/deploy.yml)，只允许从 `main` 手动触发，
 同一时间只执行一次生产部署。构建复用 [CI](../.github/workflows/ci.yml)，只有
@@ -114,6 +115,17 @@ runner/主机私有暂存包在作业结束时清理；若 SSH 中断导致清�
 从 `main` 执行 `operation=inspect` 即可查看服务、定时器、账户运行状态及最新运行/告警摘要，
 不需要证书、额外输入或下载解密。原始账户、完整日志及 Parquet 记录继续保存在主机，
 Actions 仅显示运行摘要。此操作只读账户，不运行日结或修改定时器。
+
+从 `main` 执行 `operation=ibkr-probe` 可在 VPS 本机检查 `127.0.0.1:4002`。
+先检查 TCP/协议握手，再使用独立 Python 3.12 环境中的 `ib_async==2.1.0` 建立 API 会话，
+核对账户为 Paper。仅启动非零客户端会话，不发送订单、撤单或自动绑定请求。
+SDK 环境使用 `uv run --no-project`，不改动冻结 M3 的依赖。
+回执和 SDK 调试信息以 Parquet/Zstandard 保存在主机的
+`/var/lib/invest/operations/ibkr-probes/`，Actions 不显示账户号码。
+会话检查不验证行情权限、账户资金核对或订单执行；这些仍属于 M4 后续验收。
+[首次 SDK 检查](https://github.com/wayslog/invest/actions/runs/39918594479)通过，
+其独立 socket 探针未能建立会话的旧回执保留；后续 socket 检查只负责协议握手，
+账户会话统一由选定 SDK 验证。
 
 普通 `operation=deploy` 只接受**账户引擎指纹不变**的更新，仍拒绝版本不匹配或暂停账户。
 明确需要切换引擎时，可选择 `operation=migrate` 并填写 `migration_reason`，不需要额外 secret

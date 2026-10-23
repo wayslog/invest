@@ -1,7 +1,8 @@
 """Read-only IBKR socket/session probes in a separate Python runtime on the VPS.
 
-Only startApi and reqManagedAccts are sent. No order or account mutation messages
-are implemented. Private wire replies stay in a host-local Parquet receipt.
+The socket check stops after protocol negotiation. The SDK starts an API session
+only. No order or account mutation requests are implemented. Private replies stay
+in a host-local Parquet receipt.
 """
 
 import importlib
@@ -19,7 +20,7 @@ from uuid import uuid4
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-CLIENT_ID = 9774002  # Dedicated diagnostic client; never client 0 / order binding.
+CLIENT_ID = 71  # Same dedicated nonzero client as the M4 adapter.
 PROTOCOL = b"v157..178"  # Same negotiated range as the selected ib_async 2.1.0.
 SCHEMA = pa.schema(
     [
@@ -70,7 +71,7 @@ def receive(connection: socket.socket, deadline: float) -> bytes:
     return exact(size)
 
 
-def new_row(host: str, port: int, client_id: int, method: str) -> dict[str, Any]:
+def new_row(host: str, port: int, client_id: int | None, method: str) -> dict[str, Any]:
     return {
         "observed_at": datetime.now(UTC),
         "host": host,
@@ -93,7 +94,7 @@ def new_row(host: str, port: int, client_id: int, method: str) -> dict[str, Any]
 
 
 def probe(host: str = "127.0.0.1", port: int = 4002, timeout: float = 12) -> dict[str, Any]:
-    row = new_row(host, port, CLIENT_ID, "socket")
+    row = new_row(host, port, None, "socket_handshake")
     deadline = time.monotonic() + timeout
     try:
         with socket.create_connection((host, port), timeout=timeout) as connection:
@@ -108,23 +109,7 @@ def probe(host: str = "127.0.0.1", port: int = 4002, timeout: float = 12) -> dic
                 raise ValueError("Unsupported IBKR handshake")
             row["server_version"], row["server_connection_time"] = int(fields[0]), fields[1]
             row["handshake_ok"] = True
-            row["outcome"] = "api_session_not_ready"
-            for payload in (f"71\0{2}\0{CLIENT_ID}\0\0".encode(), b"17\0" + b"1\0"):
-                connection.sendall(frame(payload))
-                row["messages"].append({"direction": "sent", "payload": payload})
-            while not (row["managed_accounts"] and row["next_valid_id_received"]):
-                reply = receive(connection, deadline)
-                row["messages"].append({"direction": "received", "payload": reply})
-                fields = reply.decode().rstrip("\0").split("\0")
-                if fields[0] == "15" and len(fields) >= 3:
-                    row["managed_accounts"] = [a for a in fields[2].split(",") if a]
-                elif fields[0] == "9" and len(fields) >= 3:
-                    row["next_valid_id_received"] = int(fields[2]) >= 0
-                elif fields[0] == "4" and len(fields) >= 4:
-                    row["error_codes"].append(int(fields[3]))
-            row["api_ready"] = True
-            row["paper_accounts_only"] = all(a.startswith("DU") for a in row["managed_accounts"])
-            row["outcome"] = "ok" if row["paper_accounts_only"] else "unexpected_account_type"
+            row["outcome"] = "handshake_ok"
     except (OSError, EOFError, ValueError) as error:
         row["error_type"] = type(error).__name__
     row["finished_at"] = datetime.now(UTC)
@@ -166,9 +151,10 @@ def public_summary(row: dict[str, Any], receipt: Path) -> dict[str, Any]:
     }
 
 
-def sdk_probe(host: str = "127.0.0.1", port: int = 4002) -> dict[str, Any]:
-    sdk = importlib.import_module("ib_async")
-    row = new_row(host, port, 71, "ib_async-2.1.0")
+def sdk_probe(host: str = "127.0.0.1", port: int = 4002, *, sdk: Any = None) -> dict[str, Any]:
+    if sdk is None:
+        sdk = importlib.import_module("ib_async")
+    row = new_row(host, port, CLIENT_ID, "ib_async-2.1.0")
     output = io.StringIO()
     logger = logging.getLogger("ib_async")
     handler = logging.StreamHandler(output)
@@ -183,8 +169,10 @@ def sdk_probe(host: str = "127.0.0.1", port: int = 4002) -> dict[str, Any]:
         row["outcome"] = "sdk_session_not_ready"
         # Client.connect starts the API session only. No account synchronization,
         # order queries or auto-binding occur; client 0 is never used.
-        ib.client.connect(host, port, clientId=71, timeout=10)
+        ib.client.connect(host, port, clientId=CLIENT_ID, timeout=10)
         row["api_ready"] = ib.client.isReady()
+        if not row["api_ready"]:
+            raise ConnectionError("SDK returned before the API session was ready")
         row["managed_accounts"] = ib.client.getAccounts()
         row["next_valid_id_received"] = ib.client.isReady()
         row["paper_accounts_only"] = bool(row["managed_accounts"]) and all(
