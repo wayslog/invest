@@ -1,0 +1,14 @@
+# 现金运维观察专用只读客户端；71 用于诊断，72 用于 M4 订单联调。
+host = "127.0.0.1"
+port = 4002
+client_id = 73
+timeout = 20
+symbols = ["SPY", "XLF"]
+duration = "5 D"
+bar_size = "1 day"
+what_to_show = "TRADES"
+use_rth = true
+market_data_type = 3
+quote_wait = 5
+max_order_notional = "1000"
+max_total_notional = "5000"

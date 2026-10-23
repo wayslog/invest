@@ -66,6 +66,7 @@ class ServiceConfig:
     telegram_required: bool = True
     telegram_token_env: str = "INVEST_TELEGRAM_BOT_TOKEN"
     telegram_uid_env: str = "INVEST_TELEGRAM_ALLOWED_UID"
+    backend: str = "legacy_forward"
 
 
 def read_service_config(path: Path) -> ServiceConfig:
@@ -82,6 +83,8 @@ def read_service_config(path: Path) -> ServiceConfig:
         config = ServiceConfig(**values)
     except (KeyError, TypeError) as exc:
         raise ValueError("Invalid service configuration fields") from exc
+    if not isinstance(config.backend, str) or config.backend not in {"legacy_forward", "ibkr_cash"}:
+        raise ValueError("Unknown observation service backend")
     if (
         type(config.attempts) is not int
         or not 1 <= config.attempts <= 5
@@ -108,6 +111,31 @@ def read_service_config(path: Path) -> ServiceConfig:
     ):
         raise ValueError("Account, data, backups and service state must have separate roots")
     return config
+
+
+def service_status(config: ServiceConfig) -> dict[str, Any]:
+    """Select the explicitly configured observation; never fall back between sources."""
+    if config.backend == "ibkr_cash":
+        from invest.ibkr_observation import status
+
+        return status(config.account)
+    return forward_status(config.account)
+
+
+def service_verify(config: ServiceConfig) -> dict[str, Any]:
+    if config.backend == "ibkr_cash":
+        from invest.ibkr_observation import verify
+
+        return verify(config.account)
+    return verify_forward(config.account)
+
+
+def _service_job(config: ServiceConfig) -> dict[str, Any]:
+    if config.backend == "ibkr_cash":
+        from invest.ibkr_observation import job
+
+        return job(config.account, config.data_root, attempts=config.attempts)
+    return forward_job(config.account, config.data_root, attempts=config.attempts)
 
 
 def _write_record(root: Path, table: pa.Table, now: datetime) -> Path:
@@ -208,6 +236,10 @@ def _backup(config: ServiceConfig, status: dict[str, Any]) -> dict[str, Any]:
         if manifest["head"] != status["head"]:
             raise ValueError("Existing backup does not match its journal head")
         return {"backup": str(output), **manifest}
+    if config.backend == "ibkr_cash":
+        from invest.ibkr_observation import backup
+
+        return backup(config.account, output)
     return backup_forward(config.account, output)
 
 
@@ -232,11 +264,11 @@ def _run_service(config: ServiceConfig) -> dict[str, Any]:
         previous = _latest(config.state_root / "runs")
         if config.telegram_required:
             telegram_recipient(config.telegram_token_env, config.telegram_uid_env)
-        verify_forward(config.account)
-        result = forward_job(config.account, config.data_root, attempts=config.attempts)
-        verified = verify_forward(config.account)
+        service_verify(config)
+        result = _service_job(config)
+        verified = service_verify(config)
         checks = verified["reconciliation_checks"]
-        status = forward_status(config.account)
+        status = service_status(config)
         saved = _backup(config, status)
         if verified["head"] != status["head"] or saved["head"] != status["head"]:
             raise ValueError("Account changed between reconciliation and backup; retry")
@@ -302,7 +334,7 @@ def check_service(config_path: Path) -> dict[str, Any]:
             raise ValueError("Daily service heartbeat is stale or in the future")
         if row["outcome"] != "ok":
             raise ValueError("Daily service last run requires attention")
-        status = forward_status(config.account)
+        status = service_status(config)
         if not status["engine_matches"] or status["head"] != row["head"]:
             raise ValueError("Account version/head changed after its last reconciliation")
         backup = Path(row["backup"])

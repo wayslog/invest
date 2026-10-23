@@ -1,0 +1,11 @@
+backend = "ibkr_cash"
+account = "/var/lib/invest/account"
+data_root = "/var/lib/invest/data/ibkr-cash"
+backup_root = "/var/lib/invest/backups"
+state_root = "/var/lib/invest/operations"
+attempts = 2
+heartbeat_max_minutes = 150
+alert_cooldown_minutes = 360
+telegram_required = true
+telegram_token_env = "INVEST_TELEGRAM_BOT_TOKEN"
+telegram_uid_env = "INVEST_TELEGRAM_ALLOWED_UID"

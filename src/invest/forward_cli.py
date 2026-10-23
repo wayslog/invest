@@ -91,6 +91,22 @@ def dispatch_forward(args: argparse.Namespace) -> dict[str, Any]:
             "forward-system-failure": system_failure,
         }[args.command]
         return operation(args.config)
+    if (args.account / "registration.parquet").is_file():
+        from invest import ibkr_observation
+
+        if getattr(args, "at", None) is not None:
+            raise ValueError("IBKR cash observation uses the host clock")
+        if args.command == "forward-status":
+            return ibkr_observation.status(args.account)
+        if args.command == "forward-verify":
+            return ibkr_observation.verify(args.account)
+        if args.command == "forward-backup":
+            return ibkr_observation.backup(args.account, args.output)
+        if args.command == "forward-job":
+            if args.issuer_source is not None:
+                raise ValueError("IBKR cash observation does not use issuer fallback data")
+            return ibkr_observation.job(args.account, args.data_root, attempts=args.attempts)
+        raise ValueError("This command requires a legacy forward account")
     if args.command == "forward-migrate":
         from invest.forward_migration import migrate_forward
 

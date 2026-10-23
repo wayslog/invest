@@ -27,8 +27,9 @@ def required(name: str, pattern: str | None = None) -> str:
     return value
 
 
-def runtime_environment() -> str | None:
-    values = {key: os.environ.get(key, "") for key in RUNTIME_KEYS}
+def runtime_environment(*, ibkr: bool = False) -> str | None:
+    keys = RUNTIME_KEYS[2:] if ibkr else RUNTIME_KEYS
+    values = {key: os.environ.get(key, "") for key in keys}
     if not any(values.values()):
         return None  # An existing protected server EnvironmentFile can be reused.
     for key, value in values.items():
@@ -151,8 +152,8 @@ def execute(
             if json.loads(summary)["outcome"] != "ok":
                 raise RuntimeError("IBKR Paper API probe did not pass; see the diagnostic summary")
             return
-        if operation == "migrate" and account is not None:
-            raise ValueError("Migration must use the existing authoritative host account")
+        if operation in {"migrate", "restart"} and account is not None:
+            raise ValueError("Migration and restart must use the authoritative host account")
         if operation == "ibkr-capture":
             commit = required("INVEST_DEPLOY_COMMIT", r"[0-9a-f]{40}")
             run = required("INVEST_DEPLOY_RUN", r"[0-9]+-[0-9]+")
@@ -206,7 +207,15 @@ def execute(
                 f"actor = {json.dumps('github:' + actor)}\nreason = {json.dumps(reason)}\n"
             )
             request.chmod(0o600)
-        environment = runtime_environment()
+        if operation == "restart":
+            actor = required("GITHUB_ACTOR", r"[A-Za-z0-9_.\[\]-]{1,128}")
+            request = payload / "restart.toml"
+            request.write_text(
+                f"actor = {json.dumps('github:' + actor)}\n"
+                'reason = "用户明确要求归档旧现金观察并从零开始；不修订旧数据"\n'
+            )
+            request.chmod(0o600)
+        environment = runtime_environment(ibkr=operation == "restart")
         if environment is not None:
             (payload / "invest.env").write_text(environment)
             (payload / "invest.env").chmod(0o600)
@@ -253,7 +262,7 @@ def execute(
             run_quiet(
                 [*ssh, command],
                 "Apply deployment",
-                data=(root / "apply.sh").read_bytes(),
+                data=(root / ("restart.sh" if operation == "restart" else "apply.sh")).read_bytes(),
                 timeout=1500,
             )
         finally:
@@ -269,7 +278,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "operation",
-        choices=["preflight", "inspect", "ibkr-probe", "ibkr-capture", "deploy", "migrate"],
+        choices=[
+            "preflight",
+            "inspect",
+            "ibkr-probe",
+            "ibkr-capture",
+            "deploy",
+            "migrate",
+            "restart",
+        ],
     )
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--account", type=Path, help="Optional existing local account to transfer")

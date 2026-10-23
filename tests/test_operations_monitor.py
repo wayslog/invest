@@ -119,6 +119,30 @@ def test_completed_observation_does_not_require_live_timers(monitor: ModuleType)
     assert "未核算会话" not in summary and "下次数据可采集时间" not in summary
 
 
+def test_ibkr_restart_progress_keeps_historical_misses_separate_from_pending_work(
+    monitor: ModuleType,
+) -> None:
+    now = datetime(2026, 10, 26, 12, tzinfo=UTC)
+    source = snapshot(now)
+    source["Account"].update(
+        source="ibkr",
+        observation_start_session="2026-10-23",
+        sessions=0,
+        decision_sessions=0,
+        missed_sessions=1,
+        missing_sessions=0,
+    )
+    row = monitor.assess(source, now)
+    assert row["healthy"] and row["missed_sessions"] == 1 and row["sessions"] == 0
+    assert row["source"] == "ibkr"
+    summary = monitor.markdown(row)
+    assert "0/60" in summary and "已记录漏跑 | 1" in summary and "ibkr" in summary
+    source["Account"]["operations"] = "completed"
+    row = monitor.assess(source, now)
+    assert not row["healthy"] and len(row["issues"]) == 1
+    assert "不延长窗口" in row["issues"][0]
+
+
 def test_transient_overlap_is_retried_without_changing_the_account(
     monitor: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

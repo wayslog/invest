@@ -27,6 +27,9 @@ REPORT_SCHEMA = pa.schema(
         ("notification", pa.string()),
         ("operations", pa.string()),
         ("risk_status", pa.string()),
+        ("source", pa.string()),
+        ("observation_start_session", pa.date32()),
+        ("missed_sessions", pa.int64()),
         ("sessions", pa.int64()),
         ("registered_sessions", pa.int64()),
         ("decision_sessions", pa.int64()),
@@ -49,7 +52,7 @@ REPORT_SCHEMA = pa.schema(
         ("health_failures_24h", pa.int64()),
         ("notification_failures_24h", pa.int64()),
     ],
-    metadata={b"schema_version": b"invest.operations.report.v1"},
+    metadata={b"schema_version": b"invest.operations.report.v2"},
 )
 
 
@@ -94,7 +97,9 @@ def assess(snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:
     finished = timestamp(run.get("finished_at"))
     checked = timestamp(health.get("recorded_at"))
     capture = timestamp(account.get("next_capture_after"))
-    completed = account["operations"] == "completed" and account["coverage_met"]
+    completed = account["operations"] == "completed"
+    if completed and not account["coverage_met"]:
+        issues.append("观察窗口已结束，及时记录未达到登记要求；漏跑保留，不延长窗口")
     if not account["accounting_verified"]:
         issues.append("账户对账未通过")
     if not account["engine_matches"]:
@@ -131,6 +136,13 @@ def assess(snapshot: dict[str, Any], now: datetime) -> dict[str, Any]:
         "issues": issues,
         "operations": account["operations"],
         "risk_status": account["risk_status"],
+        "source": account.get("source", "legacy"),
+        "observation_start_session": (
+            date.fromisoformat(account["observation_start_session"])
+            if account.get("observation_start_session")
+            else None
+        ),
+        "missed_sessions": account.get("missed_sessions", 0),
         "sessions": account["sessions"],
         "registered_sessions": account["registered_sessions"],
         "decision_sessions": account["decision_sessions"],
@@ -182,7 +194,10 @@ def markdown(row: dict[str, Any]) -> str:
     ]
     if row.get("sessions") is not None:
         lines += [
+            f"| 数据来源 | {row.get('source', 'legacy')} |",
+            f"| 观察开始交易日 | {row.get('observation_start_session') or '—'} |",
             f"| 观察进度 | {row['sessions']}/{row['registered_sessions']} 个交易日 |",
+            f"| 已记录漏跑 | {row.get('missed_sessions', 0)} 个交易日 |",
             f"| 最新核算交易日 | {row['last_session']} |",
             f"| 观察结束交易日 | {row['observation_end_session']} |",
             *(

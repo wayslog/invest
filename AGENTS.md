@@ -23,6 +23,11 @@
   code, use a new M1 demo directory: `make demo DEMO_ACCOUNT=reports/<new-name>`.
   M3 forward capital accounts keep their identity and risk history; never replace
   them with fresh capital to bypass a frozen engine or a paused/risk-halted state.
+  One explicit user-authorized exception is the 2026-10-23 replacement of the
+  paused legacy cash observation: archive its account and operations unchanged,
+  then register `m3-ibkr-cash-v1` as a new IBKR cash-only observation with a new ID,
+  USD 5,000 and a new 60-session window. Do not carry over its old 2/60 count.
+  This is not a migration or permission for later automatic account resets.
   Run `make forward-demo M3_DEMO_DIR=reports/<new-name>` for forward-engine changes.
   Version transitions use `forward-migrate` with the expected head, source engine,
   verified backup and actor/reason; only cash observations and drills support it.

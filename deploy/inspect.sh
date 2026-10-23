@@ -22,16 +22,29 @@ import invest
 from invest.forward import forward_status, verify_forward
 
 account = Path("/var/lib/invest/account")
+try:
+    from invest.forward_service import read_service_config, service_status, service_verify
+except ImportError:
+    config = None  # Older archived releases predate the IBKR cash backend.
+else:
+    config_file = Path("/etc/invest/operations.toml")
+    config = read_service_config(config_file) if config_file.is_file() else None
+if config is not None:
+    account = config.account
 observed_at = datetime.now(UTC)
-status = forward_status(account)
+status = service_status(config) if config is not None else forward_status(account)
 summary = {key: status[key] for key in (
     "mode", "operations", "risk_status", "engine_matches", "sessions", "missing_sessions",
     "last_session", "registered_sessions", "observation_end_session", "decision_sessions",
     "fills", "pending_orders", "coverage_met", "next_capture_after", "decision_deadline",
+    "source", "observation_start_session", "missed_sessions",
 ) if key in status}
 summary["observed_at"] = observed_at
 try:
-    verify_forward(account)
+    if config is not None:
+        service_verify(config)
+    else:
+        verify_forward(account)
     summary["accounting_verified"] = True
 except (OSError, ValueError):
     summary["accounting_verified"] = False

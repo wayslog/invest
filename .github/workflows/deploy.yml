@@ -6,7 +6,7 @@ on:
       operation:
         description: First check connectivity, then deploy the tested main commit
         type: choice
-        options: [preflight, inspect, ibkr-probe, ibkr-capture, deploy, migrate]
+        options: [preflight, inspect, ibkr-probe, ibkr-capture, deploy, migrate, restart]
         default: preflight
       migration_reason:
         description: Required only for an explicitly requested cash-account engine migration
@@ -53,12 +53,12 @@ jobs:
 
   build:
     needs: trusted-branch
-    if: inputs.operation == 'deploy' || inputs.operation == 'migrate' || inputs.operation == 'ibkr-capture'
+    if: inputs.operation == 'deploy' || inputs.operation == 'migrate' || inputs.operation == 'restart' || inputs.operation == 'ibkr-capture'
     uses: ./.github/workflows/ci.yml
 
   deploy:
     needs: build
-    if: inputs.operation == 'deploy' || inputs.operation == 'migrate'
+    if: inputs.operation == 'deploy' || inputs.operation == 'migrate' || inputs.operation == 'restart'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
