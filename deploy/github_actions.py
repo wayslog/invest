@@ -140,12 +140,12 @@ def execute(
             summary = run_quiet(
                 [
                     *ssh,
-                    "umask 077; current=$(readlink -f /opt/invest/current); "
-                    '"$current/.venv/bin/python" -',
+                    "umask 077; uv run --no-project --python 3.12 "
+                    "--with ib_async==2.1.0 --with 'pyarrow>=19,<25' python -",
                 ],
                 "Probe IBKR Paper API",
                 data=(root / "ibkr_probe.py").read_bytes(),
-                timeout=45,
+                timeout=180,
             )
             print(summary.decode(), end="")
             if json.loads(summary)["outcome"] != "ok":

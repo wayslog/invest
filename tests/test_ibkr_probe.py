@@ -102,7 +102,7 @@ def test_refused_port_is_reported_without_raising() -> None:
     assert not row["tcp_connected"]
 
 
-def test_runner_uses_host_python_without_deploying_an_engine(
+def test_runner_uses_isolated_sdk_without_deploying_an_engine(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     runner = load_tool("github_actions")
@@ -113,7 +113,8 @@ def test_runner_uses_host_python_without_deploying_an_engine(
     def run(command: list[str], label: str, **kwargs: Any) -> bytes:
         calls.append(label)
         if label == "Probe IBKR Paper API":
-            assert command[-1].endswith('"$current/.venv/bin/python" -')
+            assert "uv run --no-project --python 3.12" in command[-1]
+            assert "ib_async==2.1.0" in command[-1]
             assert kwargs["data"] == (ROOT / "deploy/ibkr_probe.py").read_bytes()
             return b'{"outcome":"ok","api_ready":true}\n'
         return b""

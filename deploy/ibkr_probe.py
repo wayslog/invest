@@ -1,10 +1,13 @@
-"""Read-only IBKR socket/session probe, executed with the deployed Python on the VPS.
+"""Read-only IBKR socket/session probes in a separate Python runtime on the VPS.
 
 Only startApi and reqManagedAccts are sent. No order or account mutation messages
 are implemented. Private wire replies stay in a host-local Parquet receipt.
 """
 
+import importlib
+import io
 import json
+import logging
 import socket
 import struct
 import time
@@ -25,6 +28,7 @@ SCHEMA = pa.schema(
         ("host", pa.string()),
         ("port", pa.int32()),
         ("client_id", pa.int32()),
+        ("method", pa.string()),
         ("tcp_connected", pa.bool_()),
         ("handshake_ok", pa.bool_()),
         ("api_ready", pa.bool_()),
@@ -38,7 +42,7 @@ SCHEMA = pa.schema(
         ("error_type", pa.string()),
         ("messages", pa.list_(pa.struct([("direction", pa.string()), ("payload", pa.binary())]))),
     ],
-    metadata={b"schema": b"invest.ibkr.connectivity-probe.v1", b"source": b"ibkr"},
+    metadata={b"schema": b"invest.ibkr.connectivity-probe.v2", b"source": b"ibkr"},
 )
 
 
@@ -66,12 +70,13 @@ def receive(connection: socket.socket, deadline: float) -> bytes:
     return exact(size)
 
 
-def probe(host: str = "127.0.0.1", port: int = 4002, timeout: float = 12) -> dict[str, Any]:
-    row: dict[str, Any] = {
+def new_row(host: str, port: int, client_id: int, method: str) -> dict[str, Any]:
+    return {
         "observed_at": datetime.now(UTC),
         "host": host,
         "port": port,
-        "client_id": CLIENT_ID,
+        "client_id": client_id,
+        "method": method,
         "tcp_connected": False,
         "handshake_ok": False,
         "api_ready": False,
@@ -85,6 +90,10 @@ def probe(host: str = "127.0.0.1", port: int = 4002, timeout: float = 12) -> dic
         "error_type": None,
         "messages": [],
     }
+
+
+def probe(host: str = "127.0.0.1", port: int = 4002, timeout: float = 12) -> dict[str, Any]:
+    row = new_row(host, port, CLIENT_ID, "socket")
     deadline = time.monotonic() + timeout
     try:
         with socket.create_connection((host, port), timeout=timeout) as connection:
@@ -140,6 +149,7 @@ def public_summary(row: dict[str, Any], receipt: Path) -> dict[str, Any]:
         "finished_at",
         "host",
         "port",
+        "method",
         "tcp_connected",
         "handshake_ok",
         "api_ready",
@@ -156,10 +166,62 @@ def public_summary(row: dict[str, Any], receipt: Path) -> dict[str, Any]:
     }
 
 
+def sdk_probe(host: str = "127.0.0.1", port: int = 4002) -> dict[str, Any]:
+    sdk = importlib.import_module("ib_async")
+    row = new_row(host, port, 71, "ib_async-2.1.0")
+    output = io.StringIO()
+    logger = logging.getLogger("ib_async")
+    handler = logging.StreamHandler(output)
+    previous_level, previous_propagate = logger.level, logger.propagate
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    logger.addHandler(handler)
+    ib = sdk.IB()
+    try:
+        with socket.create_connection((host, port), timeout=10):
+            row["tcp_connected"] = True
+        row["outcome"] = "sdk_session_not_ready"
+        # Client.connect starts the API session only. No account synchronization,
+        # order queries or auto-binding occur; client 0 is never used.
+        ib.client.connect(host, port, clientId=71, timeout=10)
+        row["api_ready"] = ib.client.isReady()
+        row["managed_accounts"] = ib.client.getAccounts()
+        row["next_valid_id_received"] = ib.client.isReady()
+        row["paper_accounts_only"] = bool(row["managed_accounts"]) and all(
+            account.startswith("DU") for account in row["managed_accounts"]
+        )
+        row["server_version"] = ib.client.serverVersion()
+        row["handshake_ok"] = bool(row["server_version"])
+        row["outcome"] = "ok" if row["paper_accounts_only"] else "unexpected_account_type"
+    except (OSError, EOFError, ValueError) as error:
+        row["error_type"] = type(error).__name__
+    finally:
+        ib.disconnect()
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+        logger.propagate = previous_propagate
+        row["messages"] = [{"direction": "sdk_debug", "payload": output.getvalue().encode()}]
+    row["finished_at"] = datetime.now(UTC)
+    return row
+
+
 def main() -> None:
+    directory = Path("/var/lib/invest/operations/ibkr-probes")
     row = probe()
-    path = save_receipt(row, Path("/var/lib/invest/operations/ibkr-probes"))
-    print(json.dumps(public_summary(row, path), default=str, sort_keys=True))
+    path = save_receipt(row, directory)
+    sdk_row = sdk_probe()
+    sdk_path = save_receipt(sdk_row, directory)
+    print(
+        json.dumps(
+            {
+                "outcome": sdk_row["outcome"],
+                "socket": public_summary(row, path),
+                "sdk": public_summary(sdk_row, sdk_path),
+            },
+            default=str,
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":
