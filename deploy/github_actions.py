@@ -136,6 +136,21 @@ def execute(
             )
             print(summary.decode(), end="")
             return
+        if operation == "ibkr-probe":
+            summary = run_quiet(
+                [
+                    *ssh,
+                    "umask 077; current=$(readlink -f /opt/invest/current); "
+                    '"$current/.venv/bin/python" -',
+                ],
+                "Probe IBKR Paper API",
+                data=(root / "ibkr_probe.py").read_bytes(),
+                timeout=45,
+            )
+            print(summary.decode(), end="")
+            if json.loads(summary)["outcome"] != "ok":
+                raise RuntimeError("IBKR Paper API probe did not pass; see the diagnostic summary")
+            return
         if operation == "migrate" and account is not None:
             raise ValueError("Migration must use the existing authoritative host account")
         commit = required("INVEST_DEPLOY_COMMIT", r"[0-9a-f]{40}")
@@ -217,7 +232,9 @@ def execute(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["preflight", "inspect", "deploy", "migrate"])
+    parser.add_argument(
+        "operation", choices=["preflight", "inspect", "ibkr-probe", "deploy", "migrate"]
+    )
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--account", type=Path, help="Optional existing local account to transfer")
     args = parser.parse_args()
