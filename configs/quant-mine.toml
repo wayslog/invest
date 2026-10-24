@@ -1,0 +1,26 @@
+# 先创建自己的 P1 权威快照；路径相对于本配置文件。日期必须按实际研究登记。
+snapshot = "../data/research/snapshot"
+train_start = 2022-02-01
+train_end = 2022-06-30
+validation_start = 2022-07-01
+validation_end = 2022-10-31
+test_start = 2022-11-01
+test_end = 2022-12-30
+known_through = 2022-10-31
+
+families = ["momentum", "reversal", "volatility", "volume_trend", "range_position", "price_volume"]
+windows = [5, 10, 20]
+candidate_budget = 18
+seed = 19
+max_depth = 12
+max_nodes = 80
+horizon = 5
+quantiles = 4
+min_sessions = 10
+min_coverage = 0.8
+min_train_ic = 0.02
+min_validation_ic = 0.02
+max_correlation = 0.9
+min_incremental_ic = 0.005
+pool_size = 5
+allow_exploratory = false

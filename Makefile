@@ -4,8 +4,9 @@ M2_DEMO_DIR ?= reports/m2-demo
 M3_DEMO_DIR ?= reports/m3-demo
 M4_DEMO_DIR ?= reports/m4-demo
 P1_DEMO_DIR ?= reports/p1-data-demo
+P2_DEMO_DIR ?= reports/p2-mining-demo
 
-.PHONY: install check lint typecheck test format build demo research-demo forward-demo ibkr-install ibkr-demo quant-data-demo
+.PHONY: install check lint typecheck test format build demo research-demo forward-demo ibkr-install ibkr-demo quant-data-demo quant-mine-demo
 
 install:
 	$(UV) sync --locked --python 3.12 --group research
@@ -50,3 +51,6 @@ ibkr-demo:
 
 quant-data-demo:
 	$(UV) run --locked --group research python examples/quant_data.py --output $(P1_DEMO_DIR)
+
+quant-mine-demo:
+	$(UV) run --locked --group research python examples/quant_mine.py --output $(P2_DEMO_DIR)

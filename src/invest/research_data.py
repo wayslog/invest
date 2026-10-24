@@ -60,9 +60,10 @@ def identity(value: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _validate(
+def validate_snapshot_tables(
     bars: pa.Table, universe: pa.Table, spec: SnapshotSpec
 ) -> tuple[pa.Table, tuple[str, ...]]:
+    """纯校验快照表和口径，返回交易日历与限制；不创建或改动记录。"""
     for table, schema in ((bars, RESEARCH_BARS), (universe, UNIVERSE)):
         if not table.schema.equals(schema, check_metadata=False) or any(
             (table.schema.metadata or {}).get(k) != v for k, v in (schema.metadata or {}).items()
@@ -156,7 +157,7 @@ def create_snapshot(
     *,
     allow_exploratory: bool = False,
 ) -> DataSnapshot:
-    calendar, limitations = _validate(bars, universe, spec)
+    calendar, limitations = validate_snapshot_tables(bars, universe, spec)
     if limitations and not allow_exploratory:
         raise ValueError(f"Exploratory snapshot requires explicit opt-in: {', '.join(limitations)}")
     scope = (
@@ -213,7 +214,7 @@ def load_snapshot(directory: Path, *, expected_id: str | None = None) -> DataSna
             raise ValueError(f"Snapshot data changed: {name}")
         tables[name] = pq.read_table(path)
     spec = SnapshotSpec(**{name: record[name] for name in SnapshotSpec.__dataclass_fields__})
-    calendar, limitations = _validate(tables["bars"], tables["universe"], spec)
+    calendar, limitations = validate_snapshot_tables(tables["bars"], tables["universe"], spec)
     scope = (
         "synthetic" if spec.source == "synthetic" else "exploratory" if limitations else "research"
     )

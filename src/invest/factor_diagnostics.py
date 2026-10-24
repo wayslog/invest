@@ -1,9 +1,11 @@
 """统一研究表到 Qlib 与 Alphalens；未来标签只用于研究评价。"""
 
+import warnings
 from dataclasses import dataclass
 from decimal import localcontext
-from typing import cast
+from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 
@@ -68,9 +70,27 @@ def _frame(table: pa.Table) -> pd.DataFrame:
 def _same_snapshot(factors: FactorFrame, labels: LabelFrame) -> None:
     left, right = factors.table.schema.metadata or {}, labels.table.schema.metadata or {}
     if any(
-        left.get(k) != right.get(k) for k in (b"snapshot_id", b"scope", b"source", b"price_basis")
-    ):
+        left.get(k) != right.get(k) for k in (b"snapshot_id", b"source", b"price_basis")
+    ) or left.get(b"input_scope", left[b"scope"]) != right.get(b"input_scope", right[b"scope"]):
         raise ValueError("Factor and label snapshot provenance must match")
+
+
+def _label_provenance(
+    metadata: dict[str, Any], labels: LabelFrame, *, allow_exploratory: bool
+) -> dict[str, Any]:
+    values = labels.table.schema.metadata or {}
+    exploratory = values[b"scope"] == b"exploratory"
+    if exploratory and not allow_exploratory:
+        raise ValueError("Exploratory label use requires explicit opt-in")
+    return {
+        **metadata,
+        "scope": "exploratory" if exploratory else metadata["scope"],
+        **{
+            key.decode(): int(value) if key.endswith(b"_rows") else value.decode()
+            for key, value in values.items()
+            if key.startswith(b"label_")
+        },
+    }
 
 
 def _admit_factors(
@@ -125,6 +145,9 @@ def qlib_dataset_frame(
     groups = {"feature": features}
     if labels is not None:
         _same_snapshot(factors, labels)
+        admitted.attrs["invest"] = _label_provenance(
+            admitted.attrs["invest"], labels, allow_exploratory=allow_exploratory
+        )
         returns = _frame(labels.table).pivot(
             index=["date", "instrument"], columns="horizon", values="value"
         )
@@ -172,6 +195,9 @@ def diagnose_factor(
     if type(quantiles) is not int or quantiles < 2 or not 0 <= max_loss < 1:
         raise ValueError("quantiles must be >= 2 and max_loss must be in [0, 1)")
     admitted, rejected = _admit_factors(factors, allow_exploratory=allow_exploratory, factor=factor)
+    admitted.attrs["invest"] = _label_provenance(
+        admitted.attrs["invest"], labels, allow_exploratory=allow_exploratory
+    )
     selected = admitted.set_index(["date", "instrument"])
     if selected.empty or labels.table.num_rows == 0:
         raise ValueError("Factor and forward labels must be nonempty")
@@ -201,3 +227,47 @@ def diagnose_factor(
         metadata["source"],
         metadata["price_basis"],
     )
+
+
+def describe_factor(result: FactorDiagnostics) -> dict[str, pd.DataFrame]:
+    """Alphalens 分组价格收益和换手诊断；滞后一步固定为相邻 XNYS 会话。"""
+    from alphalens.performance import (
+        factor_rank_autocorrelation,
+        mean_return_by_quantile,
+        quantile_turnover,
+    )
+
+    clean = result.clean
+    observed = clean.index.get_level_values("date")
+    sessions = regular_sessions(observed.min().date(), observed.max().date())
+    dates = pd.DatetimeIndex(sessions["date"].to_pylist())
+    holidays = pd.bdate_range(dates.min(), dates.max()).difference(dates)
+    dates = pd.DatetimeIndex(dates, freq=pd.offsets.CustomBusinessDay(holidays=holidays.to_list()))
+    # 补齐缺失会话，避免 Alphalens 把两个不相邻的观测日当作相邻交易日。
+    grid = pd.MultiIndex.from_product(
+        [dates, clean.index.get_level_values("asset").unique()], names=["date", "asset"]
+    )
+    padded = clean.reindex(grid)
+    returns, errors = mean_return_by_quantile(clean, by_date=True, demeaned=False)
+    turnover = pd.concat(
+        [
+            quantile_turnover(padded["factor_quantile"], int(quantile), period=1)
+            for quantile in sorted(clean["factor_quantile"].unique())
+        ],
+        axis=1,
+    )
+    # pandas 在只有一个共同标的的相邻横截面上会产生无定义相关系数。
+    with warnings.catch_warnings(), np.errstate(invalid="ignore", divide="ignore"):
+        warnings.filterwarnings(
+            "ignore", message="Degrees of freedom <= 0 for slice", category=RuntimeWarning
+        )
+        autocorrelation = factor_rank_autocorrelation(padded, period=1).to_frame("value")
+    outputs = {
+        "quantile_return": returns,
+        "quantile_return_error": errors,
+        "turnover": turnover,
+        "rank_autocorrelation": autocorrelation,
+    }
+    for frame in outputs.values():
+        frame.attrs["invest"] = clean.attrs["invest"].copy()
+    return outputs

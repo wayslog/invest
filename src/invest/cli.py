@@ -2,7 +2,9 @@
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
+from contextlib import redirect_stdout
 from dataclasses import asdict
 from datetime import UTC, date, datetime
 from importlib.metadata import version
@@ -104,6 +106,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     study_verify = commands.add_parser("verify-study", help="Verify and replay a saved study")
     study_verify.add_argument("--study", type=Path, required=True)
     study_verify.add_argument("--hashes-only", action="store_true")
+    mine = commands.add_parser("mine", help="Mine factors and freeze research rank signals offline")
+    mine.add_argument("--config", type=Path, required=True)
+    mine.add_argument("--output", type=Path, required=True)
     from invest.forward_cli import add_forward_commands
 
     add_forward_commands(commands)
@@ -121,6 +126,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 exit_code = 1
         elif args.command == "analyze":
             output = asdict(analyze_prices(args.parquet))
+        elif args.command == "mine":
+            from invest.factor_mining import run_mining
+
+            with redirect_stdout(sys.stderr):
+                output = asdict(run_mining(args.config, args.output))
+            output["directory"] = str(output["directory"])
+            exit_code = 0 if output["selected"] else 1
         elif args.command == "research-register":
             from invest.research_registry import register_study
 
