@@ -3,11 +3,12 @@ DEMO_ACCOUNT ?= reports/paper-demo
 M2_DEMO_DIR ?= reports/m2-demo
 M3_DEMO_DIR ?= reports/m3-demo
 M4_DEMO_DIR ?= reports/m4-demo
+P1_DEMO_DIR ?= reports/p1-data-demo
 
-.PHONY: install check lint typecheck test format build demo research-demo forward-demo ibkr-install ibkr-demo
+.PHONY: install check lint typecheck test format build demo research-demo forward-demo ibkr-install ibkr-demo quant-data-demo
 
 install:
-	$(UV) sync --locked --python 3.12
+	$(UV) sync --locked --python 3.12 --group research
 
 check: lint typecheck test
 
@@ -19,7 +20,7 @@ typecheck:
 	$(UV) run --locked mypy
 
 test:
-	$(UV) run --locked pytest --cov=invest --cov-report=term-missing
+	$(UV) run --locked --group research pytest --cov=invest --cov-report=term-missing
 
 format:
 	$(UV) run --locked ruff check --fix .
@@ -46,3 +47,6 @@ ibkr-install:
 
 ibkr-demo:
 	$(UV) run --locked invest-ibkr demo --output $(M4_DEMO_DIR)
+
+quant-data-demo:
+	$(UV) run --locked --group research python examples/quant_data.py --output $(P1_DEMO_DIR)

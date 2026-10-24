@@ -29,6 +29,10 @@ dev = [
     "pytest-cov>=7,<8",
     "ruff>=0.11,<1",
 ]
+research = [
+    "alphalens-reloaded==0.5.0",
+    "pyqlib==0.9.7",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/invest"]
@@ -74,9 +78,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-untyped_calls_exclude = ["pyarrow"]
+untyped_calls_exclude = ["pyarrow", "qlib", "alphalens"]
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["pyarrow", "pyarrow.*", "exchange_calendars", "exchange_calendars.*"]
+module = ["pyarrow", "pyarrow.*", "exchange_calendars", "exchange_calendars.*", "qlib", "qlib.*", "alphalens", "alphalens.*"]
 ignore_missing_imports = true

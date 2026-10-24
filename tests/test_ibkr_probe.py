@@ -110,12 +110,18 @@ def test_sdk_session_requires_readiness_and_paper_account_with_private_receipt(
         assert account not in str(probe_tool.public_summary(row, receipt))
 
 
-def test_refused_port_is_reported_without_raising() -> None:
-    with socket.socket() as connection:
-        connection.bind(("127.0.0.1", 0))
-        row = probe_tool.probe(port=connection.getsockname()[1], timeout=0.2)
+@pytest.mark.parametrize("error", [ConnectionRefusedError, TimeoutError])
+def test_failed_port_is_reported_without_raising(
+    monkeypatch: pytest.MonkeyPatch, error: type[OSError]
+) -> None:
+    def fail_connect(*args: Any, **kwargs: Any) -> None:
+        raise error("Synthetic connection failure")
+
+    # 绑定但未监听的端口在不同系统上可能拒绝或超时，分别验证错误处理。
+    monkeypatch.setattr(probe_tool.socket, "create_connection", fail_connect)
+    row = probe_tool.probe(port=12345, timeout=0.2)
     assert row["outcome"] == "tcp_connect_failed"
-    assert row["error_type"] == "ConnectionRefusedError"
+    assert row["error_type"] == error.__name__
     assert not row["tcp_connected"]
 
 

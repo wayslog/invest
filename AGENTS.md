@@ -4,6 +4,8 @@
   isolated. Do not create a Git worktree unless the user asks for one.
 - Install with `uv sync --locked --python 3.12`. If the default cache is not
   writable in the cloud environment, export `UV_CACHE_DIR=/workspace/.cache/uv-invest`.
+  Add `--group research` for Qlib and Alphalens; `make install` and `make test`
+  include this group. Keep the independent IBKR SDK environment separate.
 - Run `make check` for lint, formatting, types and tests. Use `make demo` for the
   offline CLI and `make build` to verify packaging. Keep checks independent of
   external market APIs or account credentials.

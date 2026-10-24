@@ -373,6 +373,13 @@ def test_inspection_summarizes_actual_receipt_schemas_without_exporting_account_
     }
     monkeypatch.setattr("invest.forward.forward_status", lambda path: status)
     monkeypatch.setattr("invest.forward.verify_forward", lambda path: {"head": "private-head"})
+
+    def fake_systemctl(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert command[0] == "systemctl" and command[1] in {"is-active", "is-enabled"}
+        return subprocess.CompletedProcess(command, 0)
+
+    # 系统服务由测试夹具模拟，不依赖开发机器是否安装 systemd。
+    monkeypatch.setattr(subprocess, "run", fake_systemctl)
     script = (ROOT / "deploy/inspect.sh").read_text().split("<<'PY'\n", 1)[1].removesuffix("PY\n")
     script = script.replace("/var/lib/invest/account", str(account))
     exec(compile(script, "inspect.sh", "exec"), {})
@@ -554,6 +561,13 @@ elif name == "uv":
     Path(".venv/bin/python").symlink_to(os.environ["HOST_MANAGED_PYTHON"])
 elif name == "chown":
     pass
+elif name == "flock":
+    import fcntl
+    assert args == ["-n", "9"]
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(1)
 elif name == "systemctl":
     log("systemctl " + " ".join(args))
     if args[0] == "is-active":
@@ -572,7 +586,7 @@ else:
 """
     )
     mock.chmod(0o755)
-    for name in ("id", "install", "runuser", "systemctl", "uv", "chown"):
+    for name in ("id", "install", "runuser", "systemctl", "uv", "chown", "flock"):
         (tools / name).symlink_to(mock)
     script = (ROOT / "deploy/apply.sh").read_text()
     for directory in ("/opt/invest", "/var/lib/invest", "/etc/invest"):

@@ -293,6 +293,13 @@ elif name == "systemctl":
     if args[0] == "show": print("inactive")
     if args[:2] == ["start", "invest-forward.service"] and os.environ["HOST_FAILURE"] == "validate":
         sys.exit(1)
+elif name == "flock":
+    import fcntl
+    assert args == ["-n", "9"]
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(1)
 elif name == "uv":
     kind = "sdk" if "--project" in args else "core"
     log("uv " + kind)
@@ -301,7 +308,7 @@ else: sys.exit(99)
 """
     )
     mock.chmod(0o755)
-    for name in ("id", "install", "runuser", "systemctl", "uv"):
+    for name in ("id", "install", "runuser", "systemctl", "uv", "flock"):
         (tools / name).symlink_to(mock)
     script = (ROOT / "deploy/restart.sh").read_text()
     for directory in ("/opt/invest", "/var/lib/invest", "/etc/invest", "/etc/systemd"):

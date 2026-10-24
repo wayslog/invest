@@ -10,6 +10,8 @@ IBKR `0.7.0` 已在 VPS 完成账户、日线、分钟线和延迟报价采集�
 现有数据保留原来源，用于历史复现和旧观察存档；新来源政策见 [数据来源决策](docs/data-sources.md)。
 
 项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
+量化研究重构的 P1 已加入 Qlib/Alphalens 数据接口，使用方法和验证边界见
+[P1 研究数据接入](docs/research/p1-data.md)；因子搜索、统一策略和动作命令仍待后续阶段。
 M0 工程原型已通过验收，见 [M0 验收记录](docs/milestones/m0.md)。
 M1 已完成：SPY 真实历史数据、质量准入、发行方分红核对和账户回放通过本地验收，
 见 [M1 验收记录](docs/milestones/m1.md)。当前开发及主机运行版本 **`0.7.1`**，新观察切换结果见阶段记录。M2 已完成，
@@ -54,6 +56,15 @@ M4 的 `0.7.0` 实现、独立 SDK 环境、Parquet 采集、执行演练与恢�
 uv sync --locked --python 3.12
 make demo
 ```
+
+研究依赖与独立数据演示：
+
+```bash
+uv sync --locked --python 3.12 --group research
+make quant-data-demo P1_DEMO_DIR=reports/p1-data-example
+```
+
+演示目录必须为新目录；只使用合成行情，不更新已有账户或研究记录。
 
 云环境如默认缓存目录不可写，先运行：
 
