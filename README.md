@@ -12,7 +12,8 @@ IBKR `0.7.0` 已在 VPS 完成账户、日线、分钟线和延迟报价采集�
 项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
 量化研究重构已接通 [P1 研究数据](docs/research/p1-data.md)和
 [P2 因子挖掘与冻结排名](docs/research/p2-mining.md)：Parquet 快照经 Qlib 计算、
-Alphalens 诊断后筛选因子池并输出股票评分。统一策略、成本后回测与买卖动作继续由 P3/P4 完成。
+Alphalens 诊断后筛选因子池并输出股票评分。[P3 统一策略与回测](docs/research/p3-backtest.md)
+接续冻结池，生成买卖动作并完成共享现金、成本和独立对账；当前建议 CLI、报告整合与旧入口清理由 P4 接续。
 M0 工程原型已通过验收，见 [M0 验收记录](docs/milestones/m0.md)。
 M1 已完成：SPY 真实历史数据、质量准入、发行方分红核对和账户回放通过本地验收，
 见 [M1 验收记录](docs/milestones/m1.md)。当前开发及主机运行版本 **`0.7.1`**，新观察切换结果见阶段记录。M2 已完成，
@@ -64,6 +65,7 @@ make demo
 uv sync --locked --python 3.12 --group research
 make quant-data-demo P1_DEMO_DIR=reports/p1-data-example
 make quant-mine-demo P2_DEMO_DIR=reports/p2-mining-example
+make quant-backtest-demo P3_DEMO_DIR=reports/p3-backtest-example
 ```
 
 演示目录必须为新目录；只使用合成行情，不更新已有账户或研究记录。

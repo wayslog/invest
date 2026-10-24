@@ -1,6 +1,7 @@
 """P2 离线合成演示：模板搜索、因子筛选、冻结与排名，不代表策略收益。"""
 
 import argparse
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -13,10 +14,10 @@ from invest.quality import regular_sessions
 from invest.research_data import create_snapshot
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    output = parser.parse_args().output.resolve()
+    output = parser.parse_args(argv).output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     sessions = regular_sessions(date(2022, 1, 3), date(2022, 12, 30)).to_pylist()
     rows, members = [], []

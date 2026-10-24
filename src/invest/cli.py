@@ -109,6 +109,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     mine = commands.add_parser("mine", help="Mine factors and freeze research rank signals offline")
     mine.add_argument("--config", type=Path, required=True)
     mine.add_argument("--output", type=Path, required=True)
+    backtest = commands.add_parser(
+        "backtest", help="Backtest a frozen factor pool with shared cash and independent audit"
+    )
+    backtest.add_argument("--config", type=Path, required=True)
+    backtest.add_argument("--output", type=Path, required=True)
+    backtest_verify = commands.add_parser(
+        "verify-backtest", help="Verify and replay a frozen signal backtest offline"
+    )
+    backtest_verify.add_argument("--study", type=Path, required=True)
     from invest.forward_cli import add_forward_commands
 
     add_forward_commands(commands)
@@ -133,6 +142,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output = asdict(run_mining(args.config, args.output))
             output["directory"] = str(output["directory"])
             exit_code = 0 if output["selected"] else 1
+        elif args.command == "backtest":
+            from invest.backtest_study import run_backtest
+
+            with redirect_stdout(sys.stderr):
+                output = asdict(run_backtest(args.config, args.output))
+            output["directory"] = str(output["directory"])
+        elif args.command == "verify-backtest":
+            from invest.backtest_study import verify_backtest
+
+            with redirect_stdout(sys.stderr):
+                output = verify_backtest(args.study)
         elif args.command == "research-register":
             from invest.research_registry import register_study
 

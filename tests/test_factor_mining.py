@@ -132,7 +132,12 @@ def test_segment_labels_are_purged_at_the_training_boundary(tmp_path: Path) -> N
 
 
 def test_frozen_pool_produces_rank_signals_without_future_labels(tmp_path: Path) -> None:
-    from invest.signals import freeze_factor_pool, generate_signals, load_factor_pool
+    from invest.signals import (
+        freeze_factor_pool,
+        generate_signal_history,
+        generate_signals,
+        load_factor_pool,
+    )
 
     data = research_snapshot(tmp_path)
     days = data.calendar.to_pylist()
@@ -175,6 +180,11 @@ def test_frozen_pool_produces_rank_signals_without_future_labels(tmp_path: Path)
     assert rows[-1]["score"] == -1.0 and rows[-1]["direction"] == 0
     assert all(row["available_at"] == days[119]["close_at"] for row in rows)
     assert all(row["expires_at"] == days[120]["close_at"] for row in rows)
+    history = generate_signal_history(
+        loaded, data, days[118]["date"], days[120]["date"], cache_root=tmp_path / "cache"
+    )
+    assert [row for row in history.table.to_pylist() if row["date"] == days[119]["date"]] == rows
+    assert history.table.num_rows == 24
     with pytest.raises(ValueError, match="selection"):
         generate_signals(loaded, data, days[78]["date"], cache_root=tmp_path / "cache")
     extended = research_snapshot(tmp_path, "changed", changed_after=120)

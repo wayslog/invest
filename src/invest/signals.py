@@ -109,10 +109,25 @@ def generate_signals(
     allow_exploratory: bool = False,
     cache_root: Path = Path("data/cache"),
 ) -> SignalFrame:
+    return generate_signal_history(
+        pool, snapshot, as_of, as_of, allow_exploratory=allow_exploratory, cache_root=cache_root
+    )
+
+
+def generate_signal_history(
+    pool: FrozenFactorPool,
+    snapshot: DataSnapshot,
+    start: date,
+    end: date,
+    *,
+    allow_exploratory: bool = False,
+    cache_root: Path = Path("data/cache"),
+) -> SignalFrame:
+    """一次计算冻结表达式，各会话独立准入与横截面排名，不使用未来标签。"""
     metadata = pool.metadata
     if not pool.table.num_rows:
         raise ValueError("No selected factors; an empty pool cannot produce signals")
-    if as_of < date.fromisoformat(metadata["knowledge_through"]):
+    if start < date.fromisoformat(metadata["knowledge_through"]):
         raise ValueError("Signals cannot precede the factor selection cutoff")
     snapshot = load_snapshot(snapshot.directory, expected_id=snapshot.snapshot_id)
     expected = {
@@ -125,13 +140,20 @@ def generate_signals(
         raise ValueError("Signal data must match the frozen pool source, units and price basis")
     if metadata["scope"] == "exploratory" and not allow_exploratory:
         raise ValueError("Exploratory factor pool requires explicit opt-in")
-    if as_of not in snapshot.calendar["date"].to_pylist():
+    if start > end or any(day not in snapshot.calendar["date"].to_pylist() for day in (start, end)):
         raise ValueError("Signal date must be a completed session in the snapshot")
     members = pool.table.to_pylist()
     factors = calculate_factors(
         snapshot, {r["factor"]: r["expression"] for r in members}, cache_root
     )
-    factors = FactorFrame(factors.table.filter(pc.equal(factors.table["date"], as_of)))
+    factors = FactorFrame(
+        factors.table.filter(
+            pc.and_(
+                pc.greater_equal(factors.table["date"], start),
+                pc.less_equal(factors.table["date"], end),
+            )
+        )
+    )
     view = qlib_dataset_frame(factors, allow_exploratory=allow_exploratory)
     features = cast(pd.DataFrame, view.get("feature", pd.DataFrame(index=view.index))).reindex(
         columns=[member["factor"] for member in members]
@@ -139,21 +161,26 @@ def generate_signals(
     ranks = cross_sectional_ranks(features).dropna()
     weights = pd.Series({r["factor"]: r["weight"] * r["direction"] for r in members})
     scores = ranks.mul(weights).sum(axis=1).clip(-1, 1).rename("score").reset_index()
-    scores = scores.sort_values(["score", "instrument"], ascending=[False, True])
-    calendar = regular_sessions(as_of, as_of + timedelta(days=14)).to_pylist()
+    scores = scores.sort_values(["datetime", "score", "instrument"], ascending=[True, False, True])
+    scores["rank"] = scores.groupby("datetime").cumcount() + 1
+    calendar = regular_sessions(start, end + timedelta(days=14)).to_pylist()
+    cutoffs = {
+        left["date"]: (left["close_at"], right["close_at"])
+        for left, right in zip(calendar[:-1], calendar[1:], strict=True)
+    }
     rows = [
         {
-            "date": as_of,
+            "date": row["datetime"].date(),
             "instrument": row["instrument"],
             "score": row["score"],
-            "rank": index + 1,
+            "rank": row["rank"],
             "direction": int(row["score"] > 0),
             "horizon": int(metadata["horizon"]),
-            "available_at": calendar[0]["close_at"],
-            "expires_at": calendar[1]["close_at"],
+            "available_at": cutoffs[row["datetime"].date()][0],
+            "expires_at": cutoffs[row["datetime"].date()][1],
             "pool_id": metadata["pool_id"],
         }
-        for index, row in enumerate(scores.to_dict("records"))
+        for row in scores.to_dict("records")
     ]
     provenance = view.attrs["invest"]
     scope = (
