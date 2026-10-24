@@ -137,22 +137,35 @@ def _read_mining_source(path: Path) -> tuple[FrozenFactorPool, dict[str, Any], s
 
 def _inputs(config: BacktestConfig) -> dict[str, pa.Table]:
     snapshot = load_snapshot(config.snapshot)
+    return execution_inputs(snapshot, config.execution, config.start, config.end)
+
+
+def _cost_binding(config: BacktestConfig, pool: FrozenFactorPool) -> None:
+    if pool.metadata.get("cost_screen") == "passed" and (
+        pool.metadata.get("cost_policy_id") != config.policy.policy_id
+        or Decimal(pool.metadata.get("cost_initial_cash", "0")) != config.initial_cash
+    ):
+        raise ValueError("Backtest policy and capital must match the mining cost screen")
+
+
+def execution_inputs(
+    snapshot: DataSnapshot, execution: dict[str, Path], start: date, end: date
+) -> dict[str, pa.Table]:
+    """回测和成本筛选共用原始成交数据的来源、单位与企业行动准入。"""
     days = snapshot.calendar["date"].to_pylist()
-    if config.start not in days or config.end not in days or days.index(config.start) == 0:
+    if start not in days or end not in days or days.index(start) == 0:
         raise ValueError("Backtest needs a preceding decision session inside the snapshot")
-    first = days[days.index(config.start) - 1]
+    first = days[days.index(start) - 1]
     all_members = snapshot.universe.to_pylist()
-    members = {
-        row["instrument"]: row["symbol"] for row in all_members if row["start"] <= config.end
-    }
-    if not set(members) <= set(config.execution) or set(config.execution) - {
+    members = {row["instrument"]: row["symbol"] for row in all_members if row["start"] <= end}
+    if not set(members) <= set(execution) or set(execution) - {
         row["instrument"] for row in all_members
     }:
         raise ValueError("Execution inputs must cover the declared snapshot universe")
     inputs = {}
     research_rows = {(row["date"], row["instrument"]): row for row in snapshot.bars.to_pylist()}
     for instrument in sorted(members):
-        path = config.execution[instrument]
+        path = execution[instrument]
         table = read_bars(path, members[instrument])
         metadata = table.schema.metadata or {}
         if metadata[b"source"].decode() != snapshot.spec.source:
@@ -170,7 +183,7 @@ def _inputs(config: BacktestConfig) -> dict[str, pa.Table]:
         rows = [
             {**row, "symbol": instrument}
             for row in table.to_pylist()
-            if first <= row["date"] <= config.end
+            if first <= row["date"] <= end
         ]
         if snapshot.spec.price_basis == "raw":
             for row in rows:
@@ -342,6 +355,7 @@ def run_backtest(
 ) -> BacktestStudy:
     config = load_backtest_config(config_path)
     pool, origin, mining_manifest = _read_mining_source(config.factor_pool)
+    _cost_binding(config, pool)
     snapshot = load_snapshot(config.snapshot)
     inputs = _inputs(config)
     prefix_bars, prefix_members = _prefix_tables(snapshot, config.end)
@@ -515,6 +529,7 @@ def read_backtest(directory: Path) -> tuple[BacktestConfig, dict[str, Any]]:
         raise ValueError("Backtest configuration changed")
     config = _frozen_config(directory)
     pool, origin, manifest = _read_mining_source(config.factor_pool)
+    _cost_binding(config, pool)
     if (
         manifest != record.get("mining_manifest_sha256")
         or origin["run_id"] != record["mining_run_id"]

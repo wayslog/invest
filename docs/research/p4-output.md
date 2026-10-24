@@ -44,8 +44,9 @@ known_through = 2022-12-30
   以及 `context_kind=backtest_simulation` 或 `declared_snapshot`。账户自身的 `snapshot_id`
   和 `source` 必须与研究快照一致。原价研究进一步逐项核对可用报价。
 
-外部账户只能由有来源依据的导出流程提供 `declared_snapshot`；本阶段没有自动从券商账户
-生成这一上下文的适配器，也不把手工声明升级成券商确认。金额、成本锚点、持仓高点、
+原始 P4 使用有来源依据的 `declared_snapshot`；现已新增 `broker_capture` 配置，
+将完整 IBKR 采集与持久账户状态核对后生成上下文，详见[筛选与账户适配](research-screening-and-broker-context.md)。
+手工声明不会升级成券商确认。金额、成本锚点、持仓高点、
 入场日期、风险状态、待处理单、分红应收和未结算现金必须保留，不允许用一份新本金替代旧状态。
 调整价研究中的原价报价与企业行动仍需原始来源证明，研究浮点缓存不能反向重建这些字段。
 

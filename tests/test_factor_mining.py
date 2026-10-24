@@ -21,11 +21,12 @@ def research_snapshot(
     length: int = 160,
     changed_after: int = 1000,
     flat: bool = False,
+    instrument_prefix: str = "SYNTH",
 ) -> DataSnapshot:
     sessions = regular_sessions(date(2022, 1, 3), date(2022, 12, 30)).to_pylist()[:length]
     rows, members = [], []
     for number in range(1, 9):
-        instrument = f"SYNTH{number}"
+        instrument = f"{instrument_prefix}{number}"
         members.append(
             {
                 "instrument": instrument,
@@ -80,6 +81,7 @@ candidate_budget = 6
 seed = 19
 horizon = 3
 min_sessions = 8
+test_block_size = 1
 ''')
     return path
 

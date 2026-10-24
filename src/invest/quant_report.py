@@ -115,6 +115,13 @@ def write_quant_report(directory: Path, kind: str, record: dict[str, Any]) -> No
                 ("validation_coverage", "验证覆盖"),
                 ("max_correlation", "最大相关"),
                 ("incremental_ic", "组合增量"),
+                ("pvalue", "分块检验 p 值"),
+                ("adjusted_pvalue", "搜索校正 p 值"),
+                ("test_family_size", "搜索族预算"),
+                ("cost_status", "成本筛选"),
+                ("net_return", "成本后收益"),
+                ("stress_return", "双倍成本收益"),
+                ("net_excess", "对等权超额"),
             ],
         )
         body += "<h2>冻结因子池</h2>" + _table(

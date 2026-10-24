@@ -13,6 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from invest.backtest_study import _prefix_tables, read_backtest
+from invest.broker_context import adapt_broker_context
 from invest.contracts import TIME, AccountSnapshot, SignalFrame, StrategyState, research_schema
 from invest.decision_io import decision_contexts, read_decision_contexts
 from invest.engine import engine_digest, research_engine_digest
@@ -55,6 +56,7 @@ RUN_SCHEMA = research_schema(
                 "context_sha256",
                 "context_kind",
                 "source_ref",
+                "broker_capture_id",
                 "error",
             )
         ],
@@ -95,6 +97,7 @@ class DecisionConfig:
     snapshot: Path
     context: Path
     known_through: date
+    broker_capture: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -106,7 +109,8 @@ class DecisionStudy:
 
 def load_decision_config(path: Path) -> DecisionConfig:
     values = tomllib.loads(path.read_text())
-    if values.keys() != {"strategy", "snapshot", "context", "known_through"}:
+    required = {"strategy", "snapshot", "context", "known_through"}
+    if not required <= values.keys() or values.keys() - required - {"broker_capture"}:
         raise ValueError("Decision requires strategy, snapshot, context and known_through")
     if type(values["known_through"]) is not date:
         raise ValueError("known_through must be a TOML date")
@@ -123,16 +127,26 @@ def load_decision_config(path: Path) -> DecisionConfig:
         raise ValueError("Decision input paths must be strings") from exc
 
 
+def _context_table(config: DecisionConfig, day: date) -> pa.Table:
+    if config.broker_capture is not None:
+        return adapt_broker_context(config.broker_capture, config.context, config.snapshot, day)
+    table = pq.read_table(config.context)
+    if (table.schema.metadata or {}).get(b"context_kind") == b"broker_capture":
+        raise ValueError("Broker context requires its original capture and persistent state")
+    return table
+
+
 def _context(
     config: DecisionConfig, day: date, policy: Policy, pool_id: str
 ) -> tuple[AccountSnapshot, StrategyState]:
-    table = pq.read_table(config.context)
+    table = _context_table(config, day)
     metadata = table.schema.metadata or {}
     if (
         metadata.get(b"policy_id", b"").decode() != policy.policy_id
         or metadata.get(b"pool_id", b"").decode() != pool_id
         or metadata.get(b"price_basis") != b"raw"
-        or metadata.get(b"context_kind") not in {b"backtest_simulation", b"declared_snapshot"}
+        or metadata.get(b"context_kind")
+        not in {b"backtest_simulation", b"declared_snapshot", b"broker_capture"}
         or not metadata.get(b"source_ref")
     ):
         raise ValueError("Decision context requires frozen policy, pool and raw quote provenance")
@@ -289,6 +303,8 @@ def run_decision(
         raise ValueError("Decision cannot precede factor selection")
     output = output.resolve()
     protected: tuple[Path, ...] = (source.directory, config.strategy)
+    if config.broker_capture:
+        protected += (config.broker_capture,)
     if any(
         (config.context.parent / marker).exists()
         for marker in (
@@ -303,7 +319,7 @@ def run_decision(
     protect_inputs((output, cache_root), protected)
     protect_inputs((cache_root,), (output,))
     known = max(config.known_through, origin["known_through"], origin["consumed_through"])
-    metadata = pq.read_schema(config.context).metadata or {}
+    metadata = _context_table(config, as_of).schema.metadata or {}
     record: dict[str, Any] = {
         "run_id": uuid.uuid4().hex,
         "status": "registered",
@@ -325,6 +341,7 @@ def run_decision(
         "context_sha256": digest(config.context),
         "context_kind": metadata[b"context_kind"].decode(),
         "source_ref": metadata[b"source_ref"].decode(),
+        "broker_capture_id": metadata.get(b"broker_capture_id", b"").decode(),
         "as_of": as_of,
         "known_through": known,
         "consumed_through": as_of,
@@ -336,7 +353,9 @@ def run_decision(
         "limitations": [
             "recommendations_only",
             "no_actual_execution_or_profitability_qualification",
-            "account_context_supplied_not_broker_verified",
+            "broker_capture_reconciled_strategy_history_supplied"
+            if config.broker_capture
+            else "account_context_supplied_not_broker_verified",
             "next_session_open_proxy",
         ],
     }
@@ -350,6 +369,8 @@ def run_decision(
         freeze_engine(output)
         shutil.copy2(config_path, output / "config.toml")
         shutil.copy2(config.context, output / "context.parquet")
+        if config.broker_capture:
+            shutil.copytree(config.broker_capture, output / "broker_capture")
         shutil.copytree(config.strategy, output / "strategy")
         shutil.copytree(config.snapshot, output / "snapshot")
         bars, members = _prefix_tables(source, as_of)
@@ -363,11 +384,18 @@ def run_decision(
         record["inference_snapshot_id"] = inference.snapshot_id
         frozen = _frozen_config(output)
         _, frozen_origin = read_backtest(frozen.strategy)
+        frozen_context = _context_table(frozen, as_of)
+        frozen_metadata = frozen_context.schema.metadata or {}
+        frozen_account, _ = _context(frozen, as_of, strategy.policy, pool.metadata["pool_id"])
         if (
             frozen_origin != origin
             or digest(output / "config.toml") != record["config_sha256"]
             or digest(frozen.context) != record["context_sha256"]
             or load_snapshot(frozen.snapshot).snapshot_id != record["snapshot_id"]
+            or frozen_metadata.get(b"broker_capture_id", b"").decode()
+            != record["broker_capture_id"]
+            or frozen_metadata.get(b"source_ref", b"").decode() != record["source_ref"]
+            or frozen_account.account_id != record["account_id"]
         ):
             raise ValueError("Decision inputs changed during freezing")
         tables = _tables(frozen, inference.directory, as_of, cache_root)
@@ -422,6 +450,9 @@ def _frozen_config(directory: Path) -> DecisionConfig:
         strategy=directory / "strategy",
         snapshot=directory / "snapshot",
         context=directory / "context.parquet",
+        broker_capture=directory / "broker_capture"
+        if (directory / "broker_capture").is_dir()
+        else None,
     )
 
 
@@ -435,9 +466,20 @@ def verify_decision(directory: Path, *, cache_root: Path = Path("data/cache")) -
         or record["versions"] != runtime_versions()
     ):
         raise ValueError("Decision replay requires its completed run and frozen engine")
+    context = _context_table(_frozen_config(directory), record["as_of"])
+    context_metadata = context.schema.metadata or {}
     if (
         digest(directory / "config.toml") != record["config_sha256"]
         or digest(directory / "context.parquet") != record["context_sha256"]
+        or context_metadata.get(b"broker_capture_id", b"").decode()
+        != record.get("broker_capture_id", "")
+        or context_metadata.get(b"source_ref", b"").decode() != record["source_ref"]
+        or [
+            account.account_id
+            for account, _ in read_decision_contexts(context)
+            if account.as_of == record["as_of"]
+        ]
+        != [record["account_id"]]
     ):
         raise ValueError("Decision configuration or account context changed")
     for name, table in _tables(

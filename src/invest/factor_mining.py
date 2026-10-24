@@ -43,11 +43,12 @@ from invest.factor_diagnostics import (
     forward_labels,
     qlib_dataset_frame,
 )
+from invest.factor_statistics import corrected_ic_test
 from invest.mining_config import MiningConfig, parse_mining_config
 from invest.qlib_adapter import calculate_factors, expression_lookback
 from invest.quality import regular_sessions
 from invest.quant_report import write_quant_report
-from invest.research_artifacts import freeze_engine, seal_artifacts
+from invest.research_artifacts import freeze_engine, protect_inputs, seal_artifacts
 from invest.research_data import (
     create_snapshot,
     identity,
@@ -64,7 +65,16 @@ TRIAL_SCHEMA = research_schema(
         ("trial_id", pa.int32()),
         *[
             (name, pa.string())
-            for name in ("factor", "family", "expression", "status", "reason", "error")
+            for name in (
+                "factor",
+                "family",
+                "expression",
+                "status",
+                "reason",
+                "error",
+                "cost_status",
+                "cost_reason",
+            )
         ],
         ("depth", pa.int32()),
         ("nodes", pa.int32()),
@@ -78,10 +88,18 @@ TRIAL_SCHEMA = research_schema(
                 "validation_coverage",
                 "max_correlation",
                 "incremental_ic",
+                "pvalue",
+                "adjusted_pvalue",
+                "net_return",
+                "stress_return",
+                "net_excess",
+                "cost_drawdown",
             )
         ],
         ("train_sessions", pa.int32()),
         ("validation_sessions", pa.int32()),
+        ("test_blocks", pa.int32()),
+        ("test_family_size", pa.int32()),
     ],
 )
 DIAGNOSTIC_SCHEMA = research_schema(
@@ -315,6 +333,7 @@ def _evaluate(
     from scipy.stats import ConstantInputWarning  # type: ignore[import-untyped]
 
     views = {}
+    validation_ic = pd.Series(dtype=float)
     failure = ""
     for segment, start, end in (
         ("train", config.train_start, config.train_end),
@@ -356,6 +375,8 @@ def _evaluate(
                 )
             sampled = _sample_dates(start, end, config.horizon)
             ic = result.rank_ic.reindex(sampled).iloc[:, 0].dropna()
+            if segment == "validation":
+                validation_ic = result.rank_ic.reindex(sampled).iloc[:, 0]
             trial[f"{segment}_coverage"] = 1 - result.loss_fraction
             trial[f"{segment}_sessions"] = len(ic)
             trial[f"{segment}_ic"] = float(ic.mean()) if len(ic) else None
@@ -371,11 +392,26 @@ def _evaluate(
         return None
     direction = 1 if trial["train_ic"] > 0 else -1
     trial["direction"] = direction
+    family_size = config.test_family_size or config.candidate_budget
+    pvalue, adjusted, blocks = corrected_ic_test(
+        validation_ic,
+        direction=direction,
+        block_size=config.test_block_size,
+        family_size=family_size,
+        resamples=config.test_resamples,
+        seed=config.seed,
+    )
+    trial.update(
+        pvalue=pvalue, adjusted_pvalue=adjusted, test_blocks=blocks, test_family_size=family_size
+    )
     if abs(trial["train_ic"]) < config.min_train_ic or trial["train_ic"] == 0:
         trial["reason"] = "weak_training_ic"
         return None
     if direction * trial["validation_ic"] < config.min_validation_ic:
         trial["reason"] = "weak_validation_ic"
+        return None
+    if adjusted > config.test_alpha:
+        trial["reason"] = "multiple_testing_rejected"
         return None
     ranks = {
         segment: cross_sectional_ranks(cast(pd.DataFrame, view["feature"]))[candidate.factor]
@@ -462,7 +498,13 @@ def _record_trial(
     directory: Path,
     metadata: dict[bytes, bytes],
 ) -> Iterator[dict[str, Any]]:
-    trial: dict[str, Any] = {**asdict(candidate), "status": "rejected", "reason": "", "error": ""}
+    trial: dict[str, Any] = {
+        **asdict(candidate),
+        "status": "rejected",
+        "reason": "",
+        "error": "",
+        "cost_status": "not_evaluated",
+    }
     try:
         yield trial
     except Exception as exc:
@@ -521,6 +563,11 @@ def run_mining(
     output = output.resolve()
     if output.is_relative_to(source.directory):
         raise ValueError("Mining output cannot modify its source snapshot")
+    protected: tuple[Path, ...] = (source.directory,)
+    if config.cost_screen:
+        protected += tuple(config.cost_screen.execution.values())
+    protect_inputs((output, cache_root), protected)
+    protect_inputs((cache_root,), (output,))
     candidates = generate_candidates(config)
     run_id = uuid.uuid4().hex
     record: dict[str, Any] = {
@@ -562,10 +609,11 @@ def run_mining(
         + [
             "development_selection_only",
             "reserved_test_not_assessed",
-            "no_multiple_testing_correction",
+            "block_sign_symmetry_and_between_block_independence_assumed",
+            "search_family_excludes_undeclared_prior_experiments",
             "industry_and_risk_exposures_not_available",
-            "cost_and_portfolio_validation_pending",
-        ],
+        ]
+        + ([] if config.cost_screen else ["cost_and_portfolio_validation_pending"]),
     }
     # 新目录是唯一写入范围；注册和候选表先落盘，异常退出仍保留搜索预算及已完成尝试。
     output.mkdir(parents=True, exist_ok=False)
@@ -594,6 +642,18 @@ def run_mining(
         source.spec,
         allow_exploratory=config.allow_exploratory,
     )
+    cost_inputs = {}
+    if config.cost_screen:
+        from invest.backtest_study import execution_inputs
+
+        cost_inputs = execution_inputs(
+            source, config.cost_screen.execution, config.validation_start, config.validation_end
+        )
+        (output / "execution").mkdir()
+        for instrument, table in cost_inputs.items():
+            pq.write_table(
+                table, output / "execution" / f"{instrument}.parquet", compression="zstd"
+            )
     labels = forward_labels(development, (config.horizon,))
     record["development_snapshot_id"] = development.snapshot_id
     diagnostics: list[dict[str, Any]] = []
@@ -638,6 +698,22 @@ def run_mining(
                         elif incremental < config.min_incremental_ic:
                             trial["reason"] = "no_incremental_ic"
                         else:
+                            if config.cost_screen:
+                                from invest.factor_costs import screen_pool
+
+                                trial.update(
+                                    screen_pool(
+                                        [*selected, trial],
+                                        development,
+                                        cost_inputs,
+                                        config,
+                                        output / "cost_screen" / f"trial_{candidate.trial_id:04d}",
+                                        cache_root,
+                                    )
+                                )
+                                if trial["cost_status"] != "passed":
+                                    trial["reason"] = trial["cost_reason"]
+                                    continue
                             trial.update(status="selected", reason="passed")
                             selected.append(trial)
                             (
@@ -670,6 +746,17 @@ def run_mining(
             "horizon": str(config.horizon),
             "weighting": "equal_signed_cross_sectional_rank",
             "evidence_status": "research_only",
+            "multiple_testing": "block_sign_bonferroni",
+            "test_family_size": str(config.test_family_size or config.candidate_budget),
+            "cost_screen": "passed" if config.cost_screen and selected else "not_evaluated",
+            **(
+                {
+                    "cost_policy_id": config.cost_screen.policy.policy_id,
+                    "cost_initial_cash": str(config.cost_screen.initial_cash),
+                }
+                if config.cost_screen
+                else {}
+            ),
         },
     )
     pq.write_table(pool.table, output / "factor_pool.parquet", compression="zstd")

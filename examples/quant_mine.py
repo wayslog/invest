@@ -7,9 +7,11 @@ from decimal import Decimal
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 from invest.cli import main as invest_main
 from invest.contracts import RESEARCH_BARS, UNIVERSE, SnapshotSpec
+from invest.market import BAR_SCHEMA
 from invest.quality import regular_sessions
 from invest.research_data import create_snapshot
 
@@ -55,11 +57,48 @@ def main(argv: Sequence[str] | None = None) -> int:
         output / "snapshot",
         SnapshotSpec("synthetic", "quant_mine_demo_v1", "raw", "shares", "synthetic"),
     )
+    (output / "execution").mkdir()
+    mapping = []
+    for member in members:
+        instrument = member["instrument"]
+        # 合成世界事先声明没有企业行动；真实数据不得据此补造零分红或拆股。
+        execution = [
+            {
+                "date": row["date"],
+                "symbol": instrument,
+                **{
+                    key: row[key].quantize(Decimal(".000001"))
+                    for key in ("open", "high", "low", "close")
+                },
+                "volume": int(row["volume"]),
+                "split_ratio": 1,
+                "dividend": Decimal(0),
+                "dividend_pay_date": None,
+            }
+            for row in rows
+            if row["instrument"] == instrument
+        ]
+        pq.write_table(
+            pa.Table.from_pylist(
+                execution,
+                schema=BAR_SCHEMA.with_metadata(
+                    {
+                        **(BAR_SCHEMA.metadata or {}),
+                        b"source": b"synthetic",
+                        b"volume_unit": b"shares",
+                        b"corporate_actions": b"synthetic_none",
+                    }
+                ),
+            ),
+            output / "execution" / f"{instrument}.parquet",
+            compression="zstd",
+        )
+        mapping.append(f'{instrument} = "execution/{instrument}.parquet"')
     config = output / "mine.toml"
     config.write_text("""snapshot = "snapshot"
 train_start = 2022-02-01
-train_end = 2022-06-30
-validation_start = 2022-07-01
+train_end = 2022-05-31
+validation_start = 2022-06-01
 validation_end = 2022-10-31
 test_start = 2022-11-01
 test_end = 2022-12-30
@@ -81,6 +120,38 @@ min_incremental_ic = 0.005
 pool_size = 5
 allow_exploratory = false
 """)
+    config.write_text(
+        config.read_text()
+        + """
+[cost_screen]
+initial_cash = "5000"
+min_return = 0.0
+min_excess_return = 0.0
+max_drawdown = 0.15
+min_fills = 2
+[cost_screen.execution]
+"""
+        + "\n".join(mapping)
+        + """
+[cost_screen.policy]
+top_k = 3
+allocation = "0.8"
+position_cap = "0.3"
+commission = "1"
+slippage_bps = "5"
+rebalance_sessions = 5
+stop_loss = "0.08"
+trailing_stop = "0.12"
+take_profit = "0.2"
+max_holding_sessions = 30
+cooldown_sessions = 5
+account_drawdown = "0.15"
+exit_mode = "protective"
+sale_proceeds = "next_session"
+participation = "0.05"
+allow_exploratory = false
+"""
+    )
     return invest_main(["mine", "--config", str(config), "--output", str(output / "study")])
 
 

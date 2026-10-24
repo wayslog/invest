@@ -9,6 +9,19 @@ from pathlib import Path
 from invest.strategies import Policy
 
 
+def parse_policy(settings: dict[str, object]) -> Policy:
+    """研究入口共用同一策略参数解析，不接受浮点金额。"""
+    values = dict(settings)
+    defaults = Policy()
+    for field in fields(Policy):
+        if field.name in values and isinstance(getattr(defaults, field.name), Decimal):
+            value = values[field.name]
+            if not isinstance(value, str):
+                raise ValueError("Policy financial values must be decimal strings")
+            values[field.name] = Decimal(value)
+    return Policy(**values)  # type: ignore[arg-type]
+
+
 @dataclass(frozen=True)
 class BacktestConfig:
     snapshot: Path
@@ -34,14 +47,7 @@ def load_backtest_config(path: Path) -> BacktestConfig:
         }
         if not values["execution"]:
             raise ValueError("Execution inputs are required")
-        settings = values.get("policy", {})
-        defaults = Policy()
-        for field in fields(Policy):
-            if field.name in settings and isinstance(getattr(defaults, field.name), Decimal):
-                if not isinstance(settings[field.name], str):
-                    raise ValueError("Policy financial values must be decimal strings")
-                settings[field.name] = Decimal(settings[field.name])
-        values["policy"] = Policy(**settings)
+        values["policy"] = parse_policy(values.get("policy", {}))
         if not isinstance(values.get("initial_cash"), str):
             raise ValueError("initial_cash must be a decimal string")
         values["initial_cash"] = Decimal(values["initial_cash"])

@@ -10,7 +10,7 @@ def frozen_case(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     return decision_case(tmp_path_factory.mktemp("decision_case"))
 
 
-def decision_case(root: Path) -> tuple[Path, Path]:
+def decision_case(root: Path, *, broker: bool = False) -> tuple[Path, Path]:
     from decimal import Decimal
 
     import pyarrow as pa
@@ -21,7 +21,7 @@ def decision_case(root: Path) -> tuple[Path, Path]:
     from invest.market import BAR_SCHEMA
     from tests.test_factor_mining import mining_config, research_snapshot
 
-    snapshot = research_snapshot(root)
+    snapshot = research_snapshot(root, instrument_prefix="IBKR" if broker else "SYNTH")
     run_mining(mining_config(root, snapshot), root / "mine", cache_root=root / "cache")
     days = snapshot.calendar["date"].to_pylist()
     mapping = []
