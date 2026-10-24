@@ -1,5 +1,6 @@
 """冻结研究输入、运行共同决策引擎并重放验证；不访问持续账户或券商。"""
 
+import hashlib
 import shutil
 import uuid
 from dataclasses import dataclass, replace
@@ -34,7 +35,7 @@ from invest.research_data import (
     load_snapshot,
     validate_snapshot_tables,
 )
-from invest.signals import generate_signal_history, load_factor_pool
+from invest.signals import FrozenFactorPool, generate_signal_history, load_factor_pool
 from invest.strategies import Policy, decide
 
 RUN_SCHEMA = research_schema(
@@ -49,6 +50,7 @@ RUN_SCHEMA = research_schema(
                 "inference_snapshot_id",
                 "pool_id",
                 "mining_run_id",
+                "mining_manifest_sha256",
                 "source",
                 "scope",
                 "source_scope",
@@ -92,6 +94,45 @@ class BacktestStudy:
     run_id: str
     status: str
     history_status: str
+
+
+MINING_FILES = ("run.parquet", "registration.parquet", "config.toml", "factor_pool.parquet")
+
+
+def _read_mining_source(path: Path) -> tuple[FrozenFactorPool, dict[str, Any], str]:
+    """从同一批读取的字节验证选中因子池、登记和完成记录；原清单保留完整来源范围。"""
+    bodies = {
+        name: (path.parent / name).read_bytes() for name in (*MINING_FILES, "artifacts.parquet")
+    }
+    entries = pq.read_table(pa.BufferReader(bodies["artifacts.parquet"])).to_pylist()
+    manifest = {row["path"]: row["sha256"] for row in entries}
+    if len(manifest) != len(entries) or any(
+        manifest.get(name) != hashlib.sha256(bodies[name]).hexdigest() for name in MINING_FILES
+    ):
+        raise ValueError("Frozen mining provenance changed")
+    origin_rows = pq.read_table(pa.BufferReader(bodies["run.parquet"])).to_pylist()
+    registrations = pq.read_table(pa.BufferReader(bodies["registration.parquet"])).to_pylist()
+    if len(origin_rows) != 1 or len(registrations) != 1:
+        raise ValueError("Frozen mining provenance requires one registration and result")
+    origin, registration = origin_rows[0], registrations[0]
+    pool = FrozenFactorPool(pq.read_table(pa.BufferReader(bodies["factor_pool.parquet"])))
+    completed_fields = {"status", "development_snapshot_id", "completed_at", "selected", "pool_id"}
+    if (
+        path.name != "factor_pool.parquet"
+        or origin["status"] != "selected"
+        or registration["status"] != "registered"
+        or origin["run_id"] != pool.metadata["run_id"]
+        or origin["pool_id"] != pool.metadata["pool_id"]
+        or origin["selected"] != pool.table.num_rows
+        or origin["config_sha256"] != hashlib.sha256(bodies["config.toml"]).hexdigest()
+        or any(
+            registration[key] != value
+            for key, value in origin.items()
+            if key not in completed_fields
+        )
+    ):
+        raise ValueError("Frozen mining pool and registration provenance disagree")
+    return pool, origin, hashlib.sha256(bodies["artifacts.parquet"]).hexdigest()
 
 
 def _inputs(config: BacktestConfig) -> dict[str, pa.Table]:
@@ -203,7 +244,7 @@ def _tables(config: BacktestConfig, cache_root: Path) -> dict[str, pa.Table]:
     result = simulate(signals, config.policy)
     portfolio = result.portfolio
     checks, attribution, cycles = audit_backtest(
-        inputs, portfolio, config.policy, config.initial_cash
+        inputs, portfolio, config.policy, config.initial_cash, availability=snapshot.bars
     )
     contexts = decision_contexts(result.contexts)
     for account, state in read_decision_contexts(contexts):
@@ -259,7 +300,7 @@ def _tables(config: BacktestConfig, cache_root: Path) -> dict[str, pa.Table]:
     scenarios["double_cost"] = (simulate(signals, stressed), stressed)
     for name, (simulation, settings) in scenarios.items():
         audit, _, closed = audit_backtest(
-            inputs, simulation.portfolio, settings, config.initial_cash
+            inputs, simulation.portfolio, settings, config.initial_cash, availability=snapshot.bars
         )
         metric = evaluate(simulation.portfolio, config.initial_cash, closed).to_pylist()[0]
         outcomes = closed["outcome"].to_pylist()
@@ -300,27 +341,14 @@ def run_backtest(
     config_path: Path, output: Path, *, cache_root: Path = Path("data/cache")
 ) -> BacktestStudy:
     config = load_backtest_config(config_path)
-    pool, snapshot = load_factor_pool(config.factor_pool), load_snapshot(config.snapshot)
+    pool, origin, mining_manifest = _read_mining_source(config.factor_pool)
+    snapshot = load_snapshot(config.snapshot)
     inputs = _inputs(config)
     prefix_bars, prefix_members = _prefix_tables(snapshot, config.end)
     _, limitations = validate_snapshot_tables(prefix_bars, prefix_members, snapshot.spec)
     if limitations and not config.policy.allow_exploratory:
         raise ValueError("Exploratory backtest history requires explicit opt-in")
     parent = config.factor_pool.parent
-    origin = pq.read_table(parent / "run.parquet").to_pylist()[0]
-    manifest = {
-        row["path"]: row["sha256"]
-        for row in pq.read_table(parent / "artifacts.parquet").to_pylist()
-    }
-    for file in ("run.parquet", "registration.parquet", "config.toml", "factor_pool.parquet"):
-        if manifest.get(file) != digest(parent / file):
-            raise ValueError("Frozen mining provenance changed")
-    if (
-        origin["status"] != "selected"
-        or origin["run_id"] != pool.metadata["run_id"]
-        or origin["pool_id"] != pool.metadata["pool_id"]
-    ):
-        raise ValueError("Backtest requires the selected pool from its original mining run")
     days = snapshot.calendar["date"].to_pylist()
     if days[days.index(config.start) - 1] < date.fromisoformat(pool.metadata["knowledge_through"]):
         raise ValueError("Backtest decisions cannot precede factor selection")
@@ -340,6 +368,7 @@ def run_backtest(
         "inference_snapshot_id": None,
         "pool_id": pool.metadata["pool_id"],
         "mining_run_id": origin["run_id"],
+        "mining_manifest_sha256": mining_manifest,
         "source": snapshot.spec.source,
         "scope": "exploratory"
         if limitations or pool.metadata["scope"] == "exploratory"
@@ -393,13 +422,7 @@ def run_backtest(
         )
         record["inference_snapshot_id"] = inference.snapshot_id
         (output / "mining").mkdir()
-        for file in (
-            "run.parquet",
-            "registration.parquet",
-            "config.toml",
-            "factor_pool.parquet",
-            "artifacts.parquet",
-        ):
+        for file in (*MINING_FILES, "artifacts.parquet"):
             shutil.copy2(parent / file, output / "mining" / file)
         (output / "execution").mkdir()
         for instrument in inputs:
@@ -407,10 +430,13 @@ def run_backtest(
             shutil.copy2(input_path, output / "execution" / f"{instrument}.parquet")
         freeze_engine(output)
         frozen = _frozen_config(output)
+        frozen_pool, frozen_origin, frozen_manifest = _read_mining_source(frozen.factor_pool)
         if (
-            digest(output / "config.toml") != record["config_sha256"]
+            frozen_origin != origin
+            or frozen_manifest != mining_manifest
+            or digest(output / "config.toml") != record["config_sha256"]
             or load_snapshot(frozen.snapshot).snapshot_id != record["snapshot_id"]
-            or load_factor_pool(frozen.factor_pool).metadata["pool_id"] != record["pool_id"]
+            or frozen_pool.metadata["pool_id"] != record["pool_id"]
         ):
             raise ValueError("Research inputs changed during freezing")
         tables = _tables(frozen, cache_root)
@@ -487,7 +513,15 @@ def read_backtest(directory: Path) -> tuple[BacktestConfig, dict[str, Any]]:
         raise ValueError("Replay requires the completed run and its frozen engine version")
     if digest(directory / "config.toml") != record["config_sha256"]:
         raise ValueError("Backtest configuration changed")
-    return _frozen_config(directory), record
+    config = _frozen_config(directory)
+    pool, origin, manifest = _read_mining_source(config.factor_pool)
+    if (
+        manifest != record.get("mining_manifest_sha256")
+        or origin["run_id"] != record["mining_run_id"]
+        or pool.metadata["pool_id"] != record["pool_id"]
+    ):
+        raise ValueError("Registered mining provenance changed")
+    return config, record
 
 
 def verify_backtest(directory: Path, *, cache_root: Path = Path("data/cache")) -> dict[str, str]:

@@ -499,3 +499,89 @@ def test_strategy_replacement_during_freezing_is_rejected(
     failed = pq.read_table(tmp_path / "decision" / "run.parquet").to_pylist()[0]
     assert failed["status"] == "failed"
     assert not (tmp_path / "decision" / "actions.parquet").exists()
+
+
+@pytest.mark.parametrize(
+    "filename", ["run.parquet", "registration.parquet", "config.toml", "artifacts.parquet"]
+)
+def test_mining_input_changes_during_backtest_freezing_are_rejected(
+    tmp_path: Path, frozen_case: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, filename: str
+) -> None:
+    import shutil
+    from typing import Any
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from invest.backtest_study import run_backtest
+    from invest.research_data import digest
+
+    study, _ = frozen_case
+    source_file = study.parent / "mine" / filename
+    before = digest(source_file)
+    original_copy = shutil.copy2
+
+    def changed_copy(source: Any, target: Any, *args: Any, **kwargs: Any) -> str:
+        copied = original_copy(source, target, *args, **kwargs)
+        if Path(source) == source_file:
+            target = Path(target)
+            if filename == "config.toml":
+                target.write_text(target.read_text() + "\n# 复制边界中的配置变化。\n")
+            else:
+                table = pq.read_table(target)
+                rows = table.to_pylist()
+                if filename == "artifacts.parquet":
+                    rows[0]["sha256"] = "0" * 64
+                else:
+                    rows[0]["run_id"] = "different_mining_run"
+                pq.write_table(
+                    pa.Table.from_pylist(rows, schema=table.schema), target, compression="zstd"
+                )
+        return str(copied)
+
+    monkeypatch.setattr(shutil, "copy2", changed_copy)
+    output = tmp_path / "backtest"
+    with pytest.raises(ValueError, match="mining|freezing"):
+        run_backtest(study.parent / "backtest.toml", output, cache_root=tmp_path / "cache")
+    assert digest(source_file) == before
+    assert pq.read_table(output / "run.parquet")["status"].to_pylist() == ["failed"]
+    assert not (output / "actions.parquet").exists()
+
+
+@pytest.mark.parametrize("reseal_mining", [False, True])
+def test_backtest_replay_revalidates_the_registered_mining_source(
+    tmp_path: Path, frozen_case: tuple[Path, Path], reseal_mining: bool
+) -> None:
+    import shutil
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from invest.backtest_study import read_backtest, verify_backtest
+    from invest.research_artifacts import seal_artifacts
+    from invest.research_data import digest
+
+    study, _ = frozen_case
+    copied = tmp_path / "backtest"
+    shutil.copytree(study, copied)
+    path = copied / "mining" / "run.parquet"
+    table = pq.read_table(path)
+    rows = table.to_pylist()
+    rows[0]["run_id"] = "different_mining_run"
+    pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path, compression="zstd")
+    if reseal_mining:
+        manifest_path = copied / "mining" / "artifacts.parquet"
+        manifest = pq.read_table(manifest_path)
+        entries = manifest.to_pylist()
+        for entry in entries:
+            if entry["path"] == "run.parquet":
+                entry["sha256"] = digest(path)
+        pq.write_table(
+            pa.Table.from_pylist(entries, schema=manifest.schema), manifest_path, compression="zstd"
+        )
+    # 外层目录清单自洽也不能覆盖最初登记的来源绑定。
+    seal_artifacts(copied)
+    with pytest.raises(ValueError, match="mining"):
+        read_backtest(copied)
+    with pytest.raises(ValueError, match="mining"):
+        verify_backtest(copied, cache_root=tmp_path / "cache")

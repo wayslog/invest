@@ -9,6 +9,7 @@ import pyarrow as pa
 
 from invest.market import MONEY
 from invest.portfolio_types import PortfolioResult
+from invest.quality import regular_sessions
 from invest.reconcile import RECONCILIATION_SCHEMA
 from invest.strategies import Policy
 from invest.study_config import StudyConfig
@@ -72,10 +73,18 @@ def audit_backtest(
     result: PortfolioResult,
     policy: Policy,
     initial_cash: Decimal,
+    *,
+    availability: pa.Table | None = None,
 ) -> tuple[pa.Table, pa.Table, pa.Table]:
     """从原始企业行动和成交独立重建，不调用 Account 或策略决策。"""
     return _reconstruct(
-        inputs, result, initial_cash, policy.commission, policy.slippage_bps, policy=policy
+        inputs,
+        result,
+        initial_cash,
+        policy.commission,
+        policy.slippage_bps,
+        policy=policy,
+        availability=availability,
     )
 
 
@@ -88,11 +97,25 @@ def _reconstruct(
     *,
     gap_bps: int = 0,
     policy: Policy | None = None,
+    availability: pa.Table | None = None,
 ) -> tuple[pa.Table, pa.Table, pa.Table]:
     unit, zero = Decimal(".000001"), Decimal(0)
     symbols = sorted(inputs)
     bars = {s: {r["date"]: r for r in inputs[s].to_pylist()} for s in symbols}
     all_dates = inputs[symbols[0]]["date"].to_pylist()
+    closes = (
+        {
+            row["date"]: row["close_at"]
+            for row in regular_sessions(all_dates[0], all_dates[-1]).to_pylist()
+        }
+        if availability is not None
+        else {}
+    )
+    known = (
+        {(row["date"], row["instrument"]): row["available_at"] for row in availability.to_pylist()}
+        if availability is not None
+        else {}
+    )
     previous = dict(zip(all_dates[1:], all_dates[:-1], strict=True))
     nav = result.equity.to_pylist()
     dates = [r["date"] for r in nav]
@@ -196,6 +219,7 @@ def _reconstruct(
             valid = (
                 trade["decision_date"] == previous[session]
                 and intent is not None
+                and intent["symbol"] == s
                 and intent["side"] == trade["side"]
                 and quantity
                 <= intent["quantity"]
@@ -422,7 +446,15 @@ def _reconstruct(
             total_market += value
             outstanding += unpaid
             total_profit += profit
-            if shares[s]:
+            # 独立按行情时点重建高点；缺少记录与明确允许探索的未知时间不可混为一谈。
+            available = availability is None or (
+                (session, s) in known
+                and (
+                    (known[session, s] is None and policy is not None and policy.allow_exploratory)
+                    or (known[session, s] is not None and known[session, s] <= closes[session])
+                )
+            )
+            if shares[s] and available:
                 peaks[s] = max(peaks[s], bars[s][session]["close"] + position_income[s])
         equity = cash + total_market + outstanding
         for label, expected in [

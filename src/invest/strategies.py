@@ -1,8 +1,9 @@
 """信号驱动的统一只读决策与组合风险规则。"""
 
 from dataclasses import asdict, dataclass, replace
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import ROUND_FLOOR, Decimal
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -161,8 +162,12 @@ def decide(
         and row["instrument"] in quotes
         and quotes[row["instrument"]].available
     }
+    unpriced = any(not quotes[instrument].available for instrument in holdings)
+    # 未准入价格不能作为组合估值；缺价时保留独立退出，但暂停依赖净值的目标仓位计算。
     nav = (
-        account.cash
+        None
+        if unpriced
+        else account.cash
         + account.receivables
         + sum((h.shares * quotes[h.instrument].close for h in account.holdings), Decimal(0))
     )
@@ -174,11 +179,10 @@ def decide(
         for position in anchors.values()
     ):
         raise ValueError("Invalid position entry date or peak")
-    unpriced = any(not quotes[instrument].available for instrument in holdings)
-    peak = state.peak_equity if unpriced else max(state.peak_equity, nav)
+    peak = state.peak_equity if nav is None else max(state.peak_equity, nav)
     status = (
         state.risk_status
-        if unpriced
+        if nav is None
         else risk_status(
             state.risk_status, nav, peak, account.initial_cash, policy.account_drawdown
         )
@@ -237,22 +241,20 @@ def decide(
         if reason:
             exits[instrument] = reason
             updated_positions[-1] = replace(updated_positions[-1], exit_reason=reason)
-    ranked = (
-        sorted(
-            (
-                key
-                for key, row in values.items()
-                if row["direction"] == 1
-                and row["score"] > policy.min_score
-                and quotes[key].active
-                and key not in exits
-                and key not in blocked
-            ),
-            key=lambda key: (values[key]["rank"], key),
-        )[: policy.top_k]
-        if status == "active" and not unpriced
-        else []
+    eligible_buys = (
+        {
+            key
+            for key, row in values.items()
+            if row["direction"] == 1
+            and row["score"] > policy.min_score
+            and quotes[key].active
+            and key not in exits
+            and key not in blocked
+        }
+        if status == "active" and not unpriced and account.operations == "active"
+        else set()
     )
+    ranked = sorted(eligible_buys, key=lambda key: (values[key]["rank"], key))[: policy.top_k]
     weight = min(policy.position_cap, policy.allocation / len(ranked)) if ranked else Decimal(0)
     reserve = sum(
         (
@@ -269,11 +271,13 @@ def decide(
         current = holdings[instrument].shares if instrument in holdings else 0
         desired = (
             int((nav * weight / quote.close).to_integral_value(rounding=ROUND_FLOOR))
-            if instrument in ranked
+            if instrument in ranked and nav is not None
             else 0
         )
         reason = "rank_selection" if instrument in ranked else "not_selected"
-        if not scheduled:
+        if unpriced:
+            desired, reason = current, "unpriced_position"
+        elif not scheduled:
             desired, reason = current, "not_scheduled"
         if instrument in exits:
             desired, reason = 0, exits[instrument]
@@ -292,11 +296,10 @@ def decide(
             )
         elif status != "active" and not current:
             desired, reason = 0, status
-        elif unpriced and desired > current:
-            desired, reason = current, "unpriced_position"
         # 仓位自然漂移按下一会话减仓处理，不声称盘中硬上限。
         if (
             current
+            and nav is not None
             and instrument not in pending
             and quote.available
             and account.operations == "active"
@@ -332,12 +335,18 @@ def decide(
         (
             min(holding.shares, targets[holding.instrument]) * quotes[holding.instrument].close
             for holding in account.holdings
+            if quotes[holding.instrument].available
         ),
         Decimal(0),
     )
     committed += sum(
         (
-            order.quantity * quotes[order.instrument].close
+            order.quantity
+            * (
+                quotes[order.instrument].close
+                if quotes[order.instrument].available
+                else order.reference_price
+            )
             for order in account.pending
             if order.side == "buy"
         ),
@@ -353,6 +362,7 @@ def decide(
         current = holdings[instrument].shares if instrument in holdings else 0
         desired, reason = targets[instrument], reasons[instrument]
         if desired > current:
+            assert nav is not None
             price = quote.close * (1 + policy.slippage_bps / 10000)
             affordable = max(
                 0,
@@ -427,55 +437,61 @@ def decide(
                 policy.trailing_stop,
                 policy.take_profit,
             )
-        rows.append(
+        row: dict[str, Any] = {
+            "date": account.as_of,
+            "instrument": instrument,
+            "action": action,
+            "current_quantity": current,
+            "target_quantity": desired,
+            "quantity": abs(delta),
+            "reference_price": quote.close.quantize(Decimal(".000001"))
+            if quote.available
+            else None,
+            "target_weight": None
+            if nav is None or not quote.available
+            else (desired * quote.close / nav if nav else Decimal(0)).quantize(Decimal(".000001")),
+            "stop_price": stop.quantize(Decimal(".000001")) if stop is not None else None,
+            "take_profit_price": profit.quantize(Decimal(".000001"))
+            if profit is not None
+            else None,
+            "score": values[instrument]["score"] if instrument in values else None,
+            "reason": reason,
+            "exit_reason": exits.get(instrument, reason if action == "SELL" else ""),
+            "available_at": closing,
+            "effective_at": following["open_at"],
+            "expires_at": following["close_at"],
+            "policy_id": policy.policy_id,
+            "pool_id": metadata.get(b"pool_id", b"").decode(),
+            "cancel_pending": instrument in pending
+            and (
+                status != "active"
+                or instrument in exits
+                or account.operations != "active"
+                or (pending[instrument].side == "buy" and instrument not in eligible_buys)
+            ),
+            "price_type": "next_session_open",
+            "exit_mode": policy.exit_mode,
+            "max_holding_sessions": policy.max_holding_sessions,
+            "cooldown_sessions": policy.cooldown_sessions,
+        }
+        # 对最终保存的动作语义生成身份，包含取消需求、退出原因和有效期；等值 Decimal 同编码。
+        row["action_id"] = identity(
             {
-                "date": account.as_of,
-                "instrument": instrument,
-                "action": action,
-                "current_quantity": current,
-                "target_quantity": desired,
-                "quantity": abs(delta),
-                "reference_price": quote.close.quantize(Decimal(".000001")),
-                "target_weight": (desired * quote.close / nav if nav else Decimal(0)).quantize(
-                    Decimal(".000001")
-                ),
-                "stop_price": stop.quantize(Decimal(".000001")) if stop is not None else None,
-                "take_profit_price": profit.quantize(Decimal(".000001"))
-                if profit is not None
-                else None,
-                "score": values[instrument]["score"] if instrument in values else None,
-                "reason": reason,
-                "exit_reason": exits.get(instrument, reason if action == "SELL" else ""),
-                "available_at": closing,
-                "effective_at": following["open_at"],
-                "expires_at": following["close_at"],
-                "policy_id": policy.policy_id,
-                "pool_id": metadata.get(b"pool_id", b"").decode(),
-                "cancel_pending": instrument in pending
-                and (status != "active" or instrument in exits or account.operations != "active"),
-                "price_type": "next_session_open",
-                "exit_mode": policy.exit_mode,
-                "max_holding_sessions": policy.max_holding_sessions,
-                "cooldown_sessions": policy.cooldown_sessions,
-                "action_id": identity(
-                    {
-                        "account": account.account_id,
-                        "date": account.as_of.isoformat(),
-                        "instrument": instrument,
-                        "policy": policy.policy_id,
-                        "snapshot": account.snapshot_id,
-                        "pool": metadata.get(b"pool_id", b"").decode(),
-                        "reason": reason,
-                        "price": str(quote.close.normalize()),
-                        "stop": str(stop.normalize()) if stop is not None else None,
-                        "profit": str(profit.normalize()) if profit is not None else None,
-                        "cash": str(account.cash.normalize()),
-                        "current": current,
-                        "target": desired,
-                    }
-                ),
+                "account": account.account_id,
+                "snapshot": account.snapshot_id,
+                "source": account.source,
+                "cash": str(account.cash.normalize()),
+                "action": {
+                    key: str(value.normalize())
+                    if isinstance(value, Decimal)
+                    else value.isoformat()
+                    if isinstance(value, date)
+                    else value
+                    for key, value in row.items()
+                },
             }
         )
+        rows.append(row)
     return DecisionPlan(
         pa.Table.from_pylist(
             rows,

@@ -241,3 +241,180 @@ def test_decimal_roundtrip_preserves_action_identity_and_rejects_subunit_quotes(
     )
     with pytest.raises(ValueError, match="precision"):
         replace(account, quotes=(Quote("ALPHA", D("100.0000001")),))
+
+
+@pytest.mark.parametrize("scheduled", [False, True])
+def test_unavailable_holdings_do_not_drive_portfolio_adjustments(scheduled: bool) -> None:
+    from invest.contracts import AccountSnapshot, Holding, PositionState, Quote, StrategyState
+    from invest.strategies import decide
+    from tests.test_backtest import policy
+
+    account = AccountSnapshot(
+        "account",
+        "snapshot",
+        "synthetic",
+        DAY,
+        D(500),
+        D(0),
+        (Quote("ALPHA", D(20), available=False), Quote("BETA", D(100))),
+        (Holding("ALPHA", 5, D(100)), Holding("BETA", 5, D(100))),
+    )
+    state = StrategyState(
+        D(1000),
+        last_rebalance=None if scheduled else date(2024, 1, 2),
+        positions=tuple(
+            PositionState(name, date(2024, 1, 2), D(100)) for name in ("ALPHA", "BETA")
+        ),
+    )
+    settings = policy(position_cap=D(".5"), rebalance_sessions=100, commission=D(0))
+    plans = [
+        decide(
+            signals(),
+            replace(account, quotes=(Quote("ALPHA", price, available=False), account.quotes[1])),
+            state,
+            settings,
+        )
+        for price in (D(20), D(100))
+    ]
+    assert plans[0].actions.equals(plans[1].actions)
+    assert all(
+        row["quantity"] == 0 and row["target_weight"] is None
+        for row in plans[0].actions.to_pylist()
+    )
+    assert plans[0].state.peak_equity == state.peak_equity
+    assert plans[0].state.last_rebalance == state.last_rebalance
+    # 不依赖组合估值的已确认止损仍然退出，不能因另一持仓缺价而被抑制。
+    stopped = replace(account, quotes=(account.quotes[0], Quote("BETA", D(80))))
+    actions = decide(
+        signals(), stopped, state, replace(settings, stop_loss=D(".1"))
+    ).actions.to_pylist()
+    beta = next(row for row in actions if row["instrument"] == "BETA")
+    assert beta["action"] == "SELL" and beta["quantity"] == 5
+    assert beta["exit_reason"] == "stop_loss" and beta["target_weight"] is None
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "unpriced_holding",
+        "universe_exit",
+        "price_unavailable",
+        "signal_missing",
+        "signal_exit",
+        "cooldown",
+        "eligible",
+    ],
+)
+def test_pending_buy_orders_recheck_entry_admission(condition: str) -> None:
+    from invest.contracts import (
+        AccountSnapshot,
+        Holding,
+        PendingOrder,
+        PositionState,
+        Quote,
+        StrategyState,
+    )
+    from invest.strategies import decide
+    from tests.test_backtest import policy
+
+    account = AccountSnapshot(
+        "account",
+        "snapshot",
+        "synthetic",
+        DAY,
+        D(1000),
+        D(500),
+        (Quote("ALPHA", D(100)), Quote("BETA", D(100))),
+        (Holding("ALPHA", 5, D(100)),),
+        (PendingOrder("BETA", "buy", 2, D(100)),),
+    )
+    state = StrategyState(D(1000), positions=(PositionState("ALPHA", DAY, D(100)),))
+    frame = signals()
+    if condition == "unpriced_holding":
+        account = replace(
+            account, quotes=(replace(account.quotes[0], available=False), account.quotes[1])
+        )
+    elif condition in {"universe_exit", "price_unavailable"}:
+        account = replace(
+            account,
+            quotes=(
+                account.quotes[0],
+                replace(
+                    account.quotes[1],
+                    active=condition != "universe_exit",
+                    available=condition != "price_unavailable",
+                ),
+            ),
+        )
+    elif condition == "signal_missing":
+        frame = SignalFrame(frame.table.slice(0, 1))
+    elif condition == "signal_exit":
+        rows = frame.table.to_pylist()
+        rows[1].update(score=0.0, direction=0)
+        frame = SignalFrame(pa.Table.from_pylist(rows, schema=frame.table.schema))
+    elif condition == "cooldown":
+        state = replace(state, last_exits=(("BETA", date(2024, 1, 2)),))
+    actions = decide(frame, account, state, policy(top_k=2)).actions.to_pylist()
+    beta = next(row for row in actions if row["instrument"] == "BETA")
+    assert beta["action"] == "WAIT" and beta["quantity"] == 0
+    assert beta["cancel_pending"] is (condition != "eligible")
+    assert account.pending[0].quantity == 2
+
+
+def test_risk_action_identity_changes_with_cancellation_and_exit_requirements() -> None:
+    from invest.contracts import (
+        AccountSnapshot,
+        Holding,
+        PendingOrder,
+        PositionState,
+        Quote,
+        StrategyState,
+    )
+    from invest.decision_io import decision_contexts, read_decision_contexts
+    from invest.strategies import decide
+    from tests.test_backtest import policy
+
+    account = AccountSnapshot(
+        "account",
+        "snapshot",
+        "synthetic",
+        DAY,
+        D(1000),
+        D(500),
+        (Quote("ALPHA", D(100)),),
+        (Holding("ALPHA", 5, D(100)),),
+        (PendingOrder("ALPHA", "buy", 1, D(100)),),
+    )
+    state = StrategyState(D(1000), positions=(PositionState("ALPHA", DAY, D(100)),))
+    active = decide(signals(), account, state, policy()).actions.to_pylist()[0]
+    halted_state = replace(state, risk_status="halted")
+    halted = decide(signals(), account, halted_state, policy()).actions.to_pylist()[0]
+    assert active["action"] == halted["action"] == "WAIT"
+    assert not active["cancel_pending"] and halted["cancel_pending"]
+    assert active["exit_reason"] == "" and halted["exit_reason"] == "halted"
+    assert active["action_id"] != halted["action_id"]
+    restored = read_decision_contexts(decision_contexts(((account, halted_state),)))[0]
+    assert decide(signals(), *restored, policy()).actions.to_pylist()[0] == halted
+
+
+def test_pending_cancellation_keeps_exposure_reserved_until_confirmation() -> None:
+    from invest.contracts import AccountSnapshot, PendingOrder, Quote, StrategyState
+    from invest.strategies import Policy, decide
+
+    account = AccountSnapshot(
+        "account",
+        "snapshot",
+        "synthetic",
+        DAY,
+        D(1000),
+        D(1000),
+        (Quote("ALPHA", D(20), available=False), Quote("BETA", D(100))),
+        pending=(PendingOrder("ALPHA", "buy", 5, D(100)),),
+    )
+    settings = Policy(
+        top_k=2, allocation=D(".6"), position_cap=D(".5"), commission=D(0), slippage_bps=D(0)
+    )
+    plan = decide(signals(), account, StrategyState(D(1000)), settings)
+    rows = {row["instrument"]: row for row in plan.actions.to_pylist()}
+    assert rows["ALPHA"]["cancel_pending"] and rows["ALPHA"]["reference_price"] is None
+    assert rows["BETA"]["quantity"] == 1

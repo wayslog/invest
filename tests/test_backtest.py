@@ -273,6 +273,78 @@ def test_legacy_buy_hold_financial_paths_are_preserved() -> None:
     assert old.trades.select(fields).to_pylist() == new.trades.select(fields).to_pylist()
 
 
+def test_audit_rejects_fills_linked_to_another_instrument_order() -> None:
+    from invest.backtest import simulate_signals
+    from invest.portfolio_audit import audit_backtest
+
+    inputs = {name: bars(name, [100] * 4) for name in ("ALPHA", "BETA")}
+    days = inputs["ALPHA"]["date"].to_pylist()
+    history = SignalFrame(pa.concat_tables([signals(day).table for day in days]))
+    settings = policy(top_k=2, commission=D(0))
+    result = simulate_signals(inputs, history, settings, days[1], days[-1], initial_cash=D(1000))
+    rows = result.portfolio.trades.to_pylist()
+    assert len(rows) == 2
+    rows[0]["order_id"], rows[1]["order_id"] = rows[1]["order_id"], rows[0]["order_id"]
+    corrupt = replace(
+        result.portfolio, trades=pa.Table.from_pylist(rows, schema=result.portfolio.trades.schema)
+    )
+    checks = audit_backtest(inputs, corrupt, settings, D(1000))[0].to_pylist()
+    errors = [row for row in checks if row["status"] == "error"]
+    assert {row["check"].split(":")[0] for row in errors} == {"ALPHA", "BETA"}
+
+
+@pytest.mark.parametrize(
+    ("timing", "exploratory"),
+    [("late", False), ("late", True), ("unknown", False), ("unknown", True), ("missing", True)],
+)
+def test_audit_respects_quote_availability_for_trailing_highs(
+    timing: str, exploratory: bool
+) -> None:
+    from datetime import timedelta
+
+    from invest.backtest import simulate_signals
+    from invest.portfolio_audit import audit_backtest
+    from invest.quality import regular_sessions
+
+    data = bars("ALPHA", [100, 100, 150, 115, 100])
+    days = data["date"].to_pylist()
+    sessions = regular_sessions(days[0], days[-1]).to_pylist()
+    rows = [
+        {"date": day, "instrument": "ALPHA", "available_at": row["close_at"]}
+        for day, row in zip(days, sessions, strict=True)
+    ]
+    if timing == "late":
+        rows[2]["available_at"] += timedelta(days=1)
+    elif timing == "unknown":
+        rows[2]["available_at"] = None
+    else:
+        rows.pop(2)
+    availability = pa.Table.from_pylist(rows)
+    history = SignalFrame(pa.concat_tables([signals(day).table for day in days]))
+    settings = policy(
+        commission=D(0),
+        trailing_stop=D(".1"),
+        exit_mode="protective",
+        rebalance_sessions=100,
+        allow_exploratory=exploratory,
+    )
+    result = simulate_signals(
+        {"ALPHA": data},
+        history,
+        settings,
+        days[1],
+        days[-1],
+        initial_cash=D(1000),
+        availability=availability,
+    )
+    sale = result.portfolio.trades.to_pylist()[-1]
+    assert sale["stop_price"] == (D(135) if timing == "unknown" and exploratory else D("103.5"))
+    checks = audit_backtest(
+        {"ALPHA": data}, result.portfolio, settings, D(1000), availability=availability
+    )[0]
+    assert set(checks["status"].to_pylist()) == {"pass"}
+
+
 def test_frozen_pool_backtest_is_replayable_and_keeps_known_history(tmp_path: Path) -> None:
     import pyarrow.parquet as pq
 

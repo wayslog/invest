@@ -407,10 +407,13 @@ def simulate_signals(
                     ),
                     availability is None
                     or (
-                        (known.get((day, symbol)) is None and policy.allow_exploratory)
-                        or (
-                            known.get((day, symbol)) is not None
-                            and known[day, symbol] <= close_times[day]
+                        (day, symbol) in known
+                        and (
+                            (known.get((day, symbol)) is None and policy.allow_exploratory)
+                            or (
+                                known.get((day, symbol)) is not None
+                                and known[day, symbol] <= close_times[day]
+                            )
                         )
                     ),
                 )
