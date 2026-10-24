@@ -147,6 +147,7 @@ def test_cli_persists_failure_and_returns_nonzero(tmp_path: Path) -> None:
             sys.executable,
             "-m",
             "invest",
+            "legacy",
             "audit",
             "--data",
             str(path),

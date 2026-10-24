@@ -1,5 +1,10 @@
 # 架构与扩展边界
 
+2026-10-24：新研究主线为 `mine → backtest → decide`，职责和契约见
+[量化重构方案](quantitative-research-refactor.md)与[P4 输出](research/p4-output.md)。
+下文保留原 M1/M2/forward 架构说明，用于兼容与历史复现，不代表新主线仍使用旧策略模拟。
+旧趋势/轮动实现现位于 `legacy_strategies.py`，共享组合模式位于 `portfolio_types.py`。
+
 新目标架构见[量化研究框架重构方案](quantitative-research-refactor.md)：直接复用 Qlib
 与 Alphalens，统一因子、信号、策略、回测和动作输出。[P1 数据接入](research/p1-data.md)
 已通过本地离线验收，后续阶段待实施；以下保留既有实现与历史版本说明。

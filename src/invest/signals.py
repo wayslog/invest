@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 
 from invest.contracts import (
     SIGNAL_SCHEMA,
+    TIME,
     DataSnapshot,
     FactorFrame,
     SignalFrame,
@@ -37,6 +38,29 @@ POOL_SCHEMA = research_schema(
         ("trial_id", pa.int32()),
     ],
 )
+
+CONTRIBUTION_SCHEMA = research_schema(
+    "factor_contributions",
+    [
+        ("date", pa.date32()),
+        ("instrument", pa.string()),
+        ("factor", pa.string()),
+        ("value", pa.float64()),
+        ("scaled_rank", pa.float64()),
+        ("direction", pa.int8()),
+        ("weight", pa.float64()),
+        ("contribution", pa.float64()),
+        ("admitted", pa.bool_()),
+        ("available_at", TIME),
+    ],
+)
+
+
+@dataclass(frozen=True)
+class SignalEvaluation:
+    signals: SignalFrame
+    factors: FactorFrame
+    contributions: pa.Table
 
 
 @dataclass(frozen=True)
@@ -123,6 +147,20 @@ def generate_signal_history(
     allow_exploratory: bool = False,
     cache_root: Path = Path("data/cache"),
 ) -> SignalFrame:
+    return evaluate_signals(
+        pool, snapshot, start, end, allow_exploratory=allow_exploratory, cache_root=cache_root
+    ).signals
+
+
+def evaluate_signals(
+    pool: FrozenFactorPool,
+    snapshot: DataSnapshot,
+    start: date,
+    end: date,
+    *,
+    allow_exploratory: bool = False,
+    cache_root: Path = Path("data/cache"),
+) -> SignalEvaluation:
     """一次计算冻结表达式，各会话独立准入与横截面排名，不使用未来标签。"""
     metadata = pool.metadata
     if not pool.table.num_rows:
@@ -158,7 +196,8 @@ def generate_signal_history(
     features = cast(pd.DataFrame, view.get("feature", pd.DataFrame(index=view.index))).reindex(
         columns=[member["factor"] for member in members]
     )
-    ranks = cross_sectional_ranks(features).dropna()
+    scaled = cross_sectional_ranks(features)
+    ranks = scaled.dropna()
     weights = pd.Series({r["factor"]: r["weight"] * r["direction"] for r in members})
     scores = ranks.mul(weights).sum(axis=1).clip(-1, 1).rename("score").reset_index()
     scores = scores.sort_values(["datetime", "score", "instrument"], ascending=[True, False, True])
@@ -198,6 +237,40 @@ def generate_signal_history(
         b"input_instruments": str(len(features)).encode(),
         b"retained_instruments": str(len(ranks)).encode(),
     }
-    return SignalFrame(
+    signals = SignalFrame(
         pa.Table.from_pylist(rows, schema=SIGNAL_SCHEMA.with_metadata(output_metadata))
+    )
+    definitions = {member["factor"]: member for member in members}
+    contributions = []
+    for row in factors.table.to_pylist():
+        member = definitions[row["factor"]]
+        key = (pd.Timestamp(row["date"]), row["instrument"])
+        rank = float(scaled.loc[key, row["factor"]])
+        admitted = bool(np.isfinite(rank))
+        contributions.append(
+            {
+                "date": row["date"],
+                "instrument": row["instrument"],
+                "factor": row["factor"],
+                "value": row["value"],
+                "scaled_rank": rank if admitted else None,
+                "direction": member["direction"],
+                "weight": member["weight"],
+                "contribution": rank * member["weight"] * member["direction"] if admitted else None,
+                "admitted": admitted,
+                "available_at": row["available_at"],
+            }
+        )
+    return SignalEvaluation(
+        signals,
+        factors,
+        pa.Table.from_pylist(
+            contributions,
+            schema=CONTRIBUTION_SCHEMA.with_metadata(
+                {
+                    **output_metadata,
+                    **(CONTRIBUTION_SCHEMA.metadata or {}),
+                }
+            ),
+        ),
     )

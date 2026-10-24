@@ -12,8 +12,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from invest.alpaca import FetchSpec, RequestData, fetch_pages
-from invest.cli import main
 from invest.datasets import fetch_dataset
+from invest.legacy_cli import main
 from invest.quality import regular_sessions
 from invest.research import admit_inputs, eligibility, run_study, verify_study
 from invest.research_registry import (
@@ -157,7 +157,7 @@ def test_changed_strategy_cannot_reuse_registration(tmp_path: Path) -> None:
     assert registered["engine_sha256"] == engine_digest()
     variant = tmp_path / "changed-engine"
     shutil.copytree("src/invest", variant / "invest", ignore=shutil.ignore_patterns("__pycache__"))
-    strategy = variant / "invest" / "strategies.py"
+    strategy = variant / "invest" / "legacy_strategies.py"
     original = strategy.read_text()
     changed = original.replace("scores[symbol] > 0", 'scores[symbol] > Decimal("0.05")')
     assert changed != original
@@ -168,6 +168,7 @@ def test_changed_strategy_cannot_reuse_registration(tmp_path: Path) -> None:
             sys.executable,
             "-m",
             "invest",
+            "legacy",
             "research",
             "--registration",
             str(registration),

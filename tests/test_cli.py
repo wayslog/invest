@@ -23,7 +23,7 @@ def test_cli_analyzes_parquet_outside_checkout(tmp_path: Path) -> None:
         path,
     )
     result = subprocess.run(
-        [sys.executable, "-m", "invest", "analyze", str(path)],
+        [sys.executable, "-m", "invest", "legacy", "analyze", str(path)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -40,7 +40,7 @@ def test_corrupt_parquet_reports_error_without_traceback(tmp_path: Path) -> None
     path = tmp_path / "prices.parquet"
     path.write_bytes(b"not parquet")
     result = subprocess.run(
-        [sys.executable, "-m", "invest", "analyze", str(path)],
+        [sys.executable, "-m", "invest", "legacy", "analyze", str(path)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
@@ -60,6 +60,7 @@ def test_paper_cli_restarts_without_duplicate_transactions(tmp_path: Path) -> No
         sys.executable,
         "-m",
         "invest",
+        "legacy",
         "paper",
         "--data",
         str(path),

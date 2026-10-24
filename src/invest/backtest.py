@@ -20,7 +20,7 @@ from invest.contracts import (
 )
 from invest.market import MONEY, validate_bars
 from invest.paper import TRADE_SCHEMA, ZERO, Account, Order, money
-from invest.portfolio import (
+from invest.portfolio_types import (
     CORRELATION_SCHEMA,
     NAV_SCHEMA,
     ORDER_SCHEMA,

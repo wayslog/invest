@@ -12,8 +12,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from invest.alpaca import FetchSpec, RequestData, authenticated_request, fetch_pages
-from invest.cli import main
 from invest.datasets import fetch_dataset, verify_dataset
+from invest.legacy_cli import main
 from invest.storage import update_paper
 from tests.helpers import BASE
 

@@ -53,7 +53,7 @@ root, phase = Path(sys.argv[1]), sys.argv[2]
 original, initial = getattr(forward, phase), engine_digest()
 def changed(*args, **kwargs):
     result = original(*args, **kwargs)
-    source = Path(forward.__file__).with_name('strategies.py')
+    source = Path(forward.__file__).with_name('legacy_strategies.py')
     body = source.read_text()
     modified = body.replace('scores[symbol] > 0', 'scores[symbol] > Decimal("0.5")')
     assert modified != body

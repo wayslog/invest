@@ -12,9 +12,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from invest.cli import main
 from invest.datasets import fetch_dataset
 from invest.dividends import SOURCE_SCHEMA, SOURCE_URL, audit_dividends
+from invest.legacy_cli import main
 from invest.storage import update_paper
 from tests.helpers import BASE
 from tests.test_datasets import SPEC, provider

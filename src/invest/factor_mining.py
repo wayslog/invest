@@ -35,7 +35,7 @@ from invest.contracts import (
     LabelFrame,
     research_schema,
 )
-from invest.engine import engine_digest
+from invest.engine import engine_digest, research_engine_digest
 from invest.factor_diagnostics import (
     FactorDiagnostics,
     describe_factor,
@@ -46,9 +46,10 @@ from invest.factor_diagnostics import (
 from invest.mining_config import MiningConfig, parse_mining_config
 from invest.qlib_adapter import calculate_factors, expression_lookback
 from invest.quality import regular_sessions
+from invest.quant_report import write_quant_report
+from invest.research_artifacts import freeze_engine, seal_artifacts
 from invest.research_data import (
     create_snapshot,
-    digest,
     identity,
     load_snapshot,
     validate_snapshot_tables,
@@ -106,6 +107,7 @@ RUN_SCHEMA = research_schema(
                 "development_snapshot_id",
                 "config_sha256",
                 "engine_digest",
+                "financial_digest",
                 "versions",
                 "holdout_status",
                 "pool_id",
@@ -527,6 +529,7 @@ def run_mining(
         "source_snapshot_id": source.snapshot_id,
         "config_sha256": hashlib.sha256(body).hexdigest(),
         "engine_digest": engine_digest(),
+        "financial_digest": research_engine_digest(),
         "versions": json.dumps(
             {
                 "python": platform.python_version(),
@@ -566,6 +569,7 @@ def run_mining(
     }
     # 新目录是唯一写入范围；注册和候选表先落盘，异常退出仍保留搜索预算及已完成尝试。
     output.mkdir(parents=True, exist_ok=False)
+    freeze_engine(output)
     (output / "config.toml").write_bytes(body)
     pq.write_table(
         pa.Table.from_pylist(
@@ -759,22 +763,8 @@ def run_mining(
         output / "run.parquet",
         compression="zstd",
     )
-    manifest = [
-        {"path": str(path.relative_to(output)), "sha256": digest(path)}
-        for path in sorted(output.rglob("*.parquet"))
-        if path.is_file()
-    ]
-    manifest.append({"path": "config.toml", "sha256": digest(output / "config.toml")})
-    pq.write_table(
-        pa.Table.from_pylist(
-            manifest,
-            schema=research_schema(
-                "mining_artifacts", [("path", pa.string()), ("sha256", pa.string())]
-            ),
-        ),
-        output / "artifacts.parquet",
-        compression="zstd",
-    )
+    write_quant_report(output, "mining", record)
+    seal_artifacts(output)
     return MiningResult(
         output,
         run_id,

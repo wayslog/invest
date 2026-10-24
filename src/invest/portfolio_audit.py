@@ -8,7 +8,7 @@ from typing import Any
 import pyarrow as pa
 
 from invest.market import MONEY
-from invest.portfolio import PortfolioResult
+from invest.portfolio_types import PortfolioResult
 from invest.reconcile import RECONCILIATION_SCHEMA
 from invest.strategies import Policy
 from invest.study_config import StudyConfig

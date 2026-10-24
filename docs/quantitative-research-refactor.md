@@ -4,7 +4,7 @@
 
 基线：`be50c3c`，项目版本 `0.7.1`
 
-状态（2026-10-24）：P1 数据接入、P2 因子挖掘与信号已完成本地离线验收；P3—P4 尚未实施。
+状态（2026-10-24）：P1—P4 已完成本地离线验收。
 未进行账户迁移或部署。
 存储决策：2026-10-23 已确认权威表格数据和正式结果统一 Parquet，第三方库可使用可重建原生缓存。
 
@@ -189,7 +189,7 @@ flowchart LR
 
 ## 7. 命令、产物与选股动作
 
-`mine`、`backtest` 已实现；`decide` 的纯函数接口已供回测和调用方共用，CLI 在 P4 接续。
+`mine`、`backtest`、`decide` 三个主入口已实现；当前决策与回测调用同一纯函数。
 使用说明见各阶段文档。
 
 | 命令 | 输入 | 输出 |
@@ -233,9 +233,9 @@ flowchart LR
 
 ## 9. 实施顺序与验收
 
-P1—P3 已通过本地离线验收，具体使用和结果见 [P1 数据接入](research/p1-data.md)、
+P1—P4 已通过本地离线验收，具体使用和结果见 [P1 数据接入](research/p1-data.md)、
 [P2 因子挖掘与信号](research/p2-mining.md)和[P3 统一策略与回测](research/p3-backtest.md)；
-P4 待实施。
+P4 输出与清理已验收，完整说明与证据见 [P4 文档](research/p4-output.md)。
 阶段完成表示能力与证据到位，不表示策略获利或获得实盘资格。
 
 | 阶段 | 交付 | 必须通过的验收 |
@@ -243,7 +243,7 @@ P4 待实施。
 | P1 依赖与数据（已完成） | 锁定 Qlib/Alphalens、统一类型、Parquet 快照到 Qlib 原生缓存及内存视图、旧行为基线 | Python 3.12 锁定依赖安装、测试离线运行；小样本因子与手算一致；删除缓存后可重建且结果一致，快照或参数变更不误用旧缓存；Decimal 原值与历史记录未变；已知缺口明确拒绝或降级 |
 | P2 挖掘与信号（已完成） | 有预算候选生成、Alphalens 诊断、去冗余、冻结因子池、SignalFrame | 确实生成与淘汰候选；标签和训练边界正确；保持历史快照时追加未来数据不改变过去特征，修改封存测试不改变开发选择；全部失败可复查 |
 | P3 统一策略与回测（已完成） | 共享决策、单/多标的引擎、成本、退出与独立对账 | 相同截点及状态的回测/每日动作一致；保持旧策略语义时现金、成交、持仓与原版一致；跳空、部分成交、分红、拆股和重跑行为正确 |
-| P4 输出与清理 | 三个主入口、选股动作表、报告、旧主线路径删除 | 从挖掘到回测再到当前决策完整离线演示；真实数据另列准入证据；原版本可重放；无账户或部署副作用 |
+| P4 输出与清理（已完成） | 三个主入口、选股动作表、报告、旧主线路径删除 | 从挖掘到回测再到当前决策完整离线演示；真实数据另列准入证据；原版本可重放；无账户或部署副作用 |
 
 每阶段运行 `make check`；集成验收运行 `make demo`、研究离线演示和 `make build`。
 P2 当前以 OHLCV 模板、数值相关和固定等权信号的预测增量完成工程验收；行业/风险暴露
@@ -264,3 +264,16 @@ P2 当前以 OHLCV 模板、数值相关和固定等权信号的预测增量完�
 - [Alphalens 数据对齐](https://github.com/stefan-jansen/alphalens-reloaded/blob/main/src/alphalens/utils.py)、[统计实现](https://github.com/stefan-jansen/alphalens-reloaded/blob/main/src/alphalens/performance.py)、[依赖声明](https://github.com/stefan-jansen/alphalens-reloaded/blob/main/pyproject.toml)：用于诊断，不替代账户回测。
 - [LEAN 决策分层](https://www.quantconnect.com/docs/v2/writing-algorithms/algorithm-framework/overview)、[Zipline 计算图](https://github.com/stefan-jansen/zipline-reloaded/blob/main/src/zipline/pipeline/engine.py)、[AlphaGen](https://github.com/ICT-FinD-Lab/alphagen)、[RD-Agent](https://github.com/microsoft/RD-Agent)：结构与研究流程参考。
 - 项目约束见 [AGENTS.md](../AGENTS.md)、[数据来源决策](data-sources.md)、[数据约定](data.md)；历史研究见 [M2 使用说明](research/README.md)、[R1 失败复盘](research/r1-postmortem.md)、[冻结未来研究](research/r1-capital-budget.md)；持续账户规则见 [前向运行](forward.md)与[IBKR 现金观察](ibkr-cash-observation.md)。
+
+## 11. P4 文件处置
+
+- `cli.py` 只承载三个新主入口及两项重放校验。旧 M1/M2/R1 命令从默认入口删除，
+  移至显式 `legacy_cli.py`；`forward-*` 原命令委派保留，独立 `invest-ibkr` 不变。
+- 旧趋势/轮动与筛选移到 `legacy_strategies.py`，旧 Python 导入名兼容保留。
+  `portfolio_types.py` 提取新旧共用结果模式；新回测不再依赖旧模拟器才能取得类型。
+- `decision_study.py` 实现冻结策略、账户时点核对、只读动作与重放；`signals.py` 统一输出
+  实际计算评分所用的因子贡献；`quant_report.py` 统一三个阶段的报告。
+- 旧 `paper.py`、`portfolio.py`、M2/R1 和持续账户模块仍服务兼容与冻结重放，
+  不把现有部署或历史账户切到新引擎。这里清理的是新研究主线，物理删除仍被兼容调用的旧引擎
+  会破坏已有约束，因此保留其原语义和历史入口，不再作为新研究的策略选择路径。
+- 新研究同时记录完整源码与金融行为摘要；旧账户仍采用原 `engine_digest`，不追改指纹。

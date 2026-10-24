@@ -1,14 +1,12 @@
 """冻结研究输入、运行共同决策引擎并重放验证；不访问持续账户或券商。"""
 
-import json
-import platform
 import shutil
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from importlib.metadata import version
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -17,10 +15,18 @@ from invest.backtest import BacktestResult, simulate_signals
 from invest.backtest_config import BacktestConfig, load_backtest_config
 from invest.contracts import UNIVERSE, DataSnapshot, SignalFrame, research_schema
 from invest.decision_io import decision_contexts, read_decision_contexts
-from invest.engine import engine_digest
+from invest.engine import engine_digest, research_engine_digest
 from invest.evaluation import METRIC_SCHEMA, evaluate, yearly
 from invest.market import read_bars
 from invest.portfolio_audit import audit_backtest
+from invest.quant_report import write_quant_report
+from invest.research_artifacts import (
+    freeze_engine,
+    protect_inputs,
+    runtime_versions,
+    seal_artifacts,
+    verify_artifacts,
+)
 from invest.research_data import (
     create_snapshot,
     digest,
@@ -47,6 +53,7 @@ RUN_SCHEMA = research_schema(
                 "scope",
                 "source_scope",
                 "engine_digest",
+                "financial_digest",
                 "versions",
                 "history_status",
                 "origin_holdout_status",
@@ -77,9 +84,6 @@ SUMMARY_SCHEMA = research_schema(
         ("average_r", pa.float64()),
     ],
 )
-MANIFEST_SCHEMA = research_schema(
-    "backtest_artifacts", [("path", pa.string()), ("sha256", pa.string())]
-)
 
 
 @dataclass(frozen=True)
@@ -88,26 +92,6 @@ class BacktestStudy:
     run_id: str
     status: str
     history_status: str
-
-
-def _versions() -> str:
-    return json.dumps(
-        {
-            "python": platform.python_version(),
-            **{
-                name: version(name)
-                for name in (
-                    "pyqlib",
-                    "alphalens-reloaded",
-                    "pyarrow",
-                    "pandas",
-                    "numpy",
-                    "exchange-calendars",
-                )
-            },
-        },
-        sort_keys=True,
-    )
 
 
 def _inputs(config: BacktestConfig) -> dict[str, pa.Table]:
@@ -341,6 +325,7 @@ def run_backtest(
     if days[days.index(config.start) - 1] < date.fromisoformat(pool.metadata["knowledge_through"]):
         raise ValueError("Backtest decisions cannot precede factor selection")
     output = output.resolve()
+    protect_inputs((cache_root,), (snapshot.directory, parent, output))
     if output.is_relative_to(snapshot.directory) or output.is_relative_to(parent):
         raise ValueError("Backtest output cannot modify historical research inputs")
     known = max(
@@ -364,7 +349,8 @@ def run_backtest(
         "source_scope": snapshot.scope,
         "source_limitations": list(snapshot.limitations),
         "engine_digest": engine_digest(),
-        "versions": _versions(),
+        "financial_digest": research_engine_digest(),
+        "versions": runtime_versions(),
         "history_status": "known_history" if known >= config.start else "declared_unseen_evaluated",
         "origin_holdout_status": origin["holdout_status"],
         "known_through": known,
@@ -419,12 +405,7 @@ def run_backtest(
         for instrument in inputs:
             input_path = config.execution[instrument]
             shutil.copy2(input_path, output / "execution" / f"{instrument}.parquet")
-        (output / "engine" / "invest").mkdir(parents=True)
-        for source_path in Path(__file__).parent.glob("*.py"):
-            shutil.copy2(source_path, output / "engine" / "invest" / source_path.name)
-        lock = Path(__file__).resolve().parents[2] / "uv.lock"
-        if lock.is_file():
-            shutil.copy2(lock, output / "uv.lock")
+        freeze_engine(output)
         frozen = _frozen_config(output)
         if (
             digest(output / "config.toml") != record["config_sha256"]
@@ -445,6 +426,10 @@ def run_backtest(
                 b"evidence_status": b"research_only",
                 b"source_snapshot_id": snapshot.snapshot_id.encode(),
                 b"source_scope": snapshot.scope.encode(),
+                b"policy_id": config.policy.policy_id.encode(),
+                b"pool_id": pool.metadata["pool_id"].encode(),
+                b"context_kind": b"backtest_simulation",
+                b"source_ref": record["run_id"].encode(),
             }
             pq.write_table(
                 table.replace_schema_metadata(metadata),
@@ -471,16 +456,9 @@ def run_backtest(
             output / "run.parquet",
             compression="zstd",
         )
-        artifacts = [
-            {"path": str(path.relative_to(output)), "sha256": digest(path)}
-            for path in sorted(output.rglob("*"))
-            if path.is_file()
-        ]
-        pq.write_table(
-            pa.Table.from_pylist(artifacts, schema=MANIFEST_SCHEMA),
-            output / "artifacts.parquet",
-            compression="zstd",
-        )
+        if record["status"] in {"completed", "insufficient_evidence"}:
+            write_quant_report(output, "backtest", record)
+        seal_artifacts(output)
     return BacktestStudy(output, record["run_id"], record["status"], record["history_status"])
 
 
@@ -497,33 +475,26 @@ def _frozen_config(directory: Path) -> BacktestConfig:
     )
 
 
-def verify_backtest(directory: Path, *, cache_root: Path = Path("data/cache")) -> dict[str, str]:
-    """只读校验输入及产物，并在内存重跑全部情景，不覆盖旧研究。"""
-    manifest = pq.read_table(directory / "artifacts.parquet").to_pylist()
-    if {row["path"] for row in manifest} != {
-        str(path.relative_to(directory))
-        for path in directory.rglob("*")
-        if path.is_file() and path != directory / "artifacts.parquet"
-    }:
-        raise ValueError("Backtest artifact inventory changed")
-    for row in manifest:
-        path = (directory / row["path"]).resolve()
-        if (
-            not path.is_relative_to(directory.resolve())
-            or not path.is_file()
-            or digest(path) != row["sha256"]
-        ):
-            raise ValueError(f"Backtest artifact changed: {row['path']}")
+def read_backtest(directory: Path) -> tuple[BacktestConfig, dict[str, Any]]:
+    """校验冻结回测及版本后提供策略，不运行或改写该实验。"""
+    verify_artifacts(directory)
     record = pq.read_table(directory / "run.parquet").to_pylist()[0]
     if (
         record["status"] != "completed"
-        or record["engine_digest"] != engine_digest()
-        or record["versions"] != _versions()
+        or record.get("financial_digest") != research_engine_digest()
+        or record["versions"] != runtime_versions()
     ):
         raise ValueError("Replay requires the completed run and its frozen engine version")
     if digest(directory / "config.toml") != record["config_sha256"]:
         raise ValueError("Backtest configuration changed")
-    for name, table in _tables(_frozen_config(directory), cache_root).items():
+    return _frozen_config(directory), record
+
+
+def verify_backtest(directory: Path, *, cache_root: Path = Path("data/cache")) -> dict[str, str]:
+    """只读校验输入及产物，并在内存重跑全部情景，不覆盖旧研究。"""
+    protect_inputs((cache_root,), (directory,))
+    config, record = read_backtest(directory)
+    for name, table in _tables(config, cache_root).items():
         if not table.equals(pq.read_table(directory / f"{name}.parquet"), check_metadata=False):
             raise ValueError(f"Backtest replay changed: {name}")
     return {

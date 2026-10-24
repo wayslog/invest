@@ -1,80 +1,35 @@
 """Shared-cash, whole-share research portfolio using the M1 accounting core."""
 
-from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any
 
 import pyarrow as pa
 
-from invest.market import MONEY, validate_bars
+from invest.market import validate_bars
 from invest.paper import TRADE_SCHEMA, ZERO, Account, Order, money
+from invest.portfolio_types import (
+    CORRELATION_SCHEMA as CORRELATION_SCHEMA,
+)
+from invest.portfolio_types import (
+    NAV_SCHEMA as NAV_SCHEMA,
+)
+from invest.portfolio_types import (
+    ORDER_SCHEMA as ORDER_SCHEMA,
+)
+from invest.portfolio_types import (
+    PORTFOLIO_EVENT_SCHEMA as PORTFOLIO_EVENT_SCHEMA,
+)
+from invest.portfolio_types import (
+    POSITION_SCHEMA as POSITION_SCHEMA,
+)
+from invest.portfolio_types import (
+    PortfolioResult as PortfolioResult,
+)
 from invest.quality import regular_sessions
 from invest.risk import position_exit, risk_status
 from invest.strategies import Candidate, History, target_weights
 from invest.study_config import StudyConfig
-
-NAV_SCHEMA = pa.schema(
-    [
-        ("date", pa.date32()),
-        ("cash", MONEY),
-        ("market_value", MONEY),
-        ("receivables", MONEY),
-        ("equity", MONEY),
-        ("drawdown", pa.float64()),
-        ("gross_exposure", pa.float64()),
-        ("status", pa.string()),
-    ]
-)
-POSITION_SCHEMA = pa.schema(
-    [
-        ("date", pa.date32()),
-        ("symbol", pa.string()),
-        ("shares", pa.int64()),
-        ("market_value", MONEY),
-        ("receivables", MONEY),
-        ("weight", pa.float64()),
-        ("risk_group", pa.string()),
-    ]
-)
-ORDER_SCHEMA = pa.schema(
-    [
-        ("decision_date", pa.date32()),
-        ("symbol", pa.string()),
-        ("side", pa.string()),
-        ("quantity", pa.int64()),
-        ("target_weight", MONEY),
-        ("reason", pa.string()),
-    ]
-)
-PORTFOLIO_EVENT_SCHEMA = pa.schema(
-    [
-        ("date", pa.date32()),
-        ("symbol", pa.string()),
-        ("kind", pa.string()),
-        ("detail", pa.string()),
-        ("amount", MONEY),
-    ]
-)
-CORRELATION_SCHEMA = pa.schema(
-    [
-        ("date", pa.date32()),
-        ("symbol", pa.string()),
-        ("other", pa.string()),
-        ("correlation", pa.float64()),
-        ("accepted", pa.bool_()),
-    ]
-)
-
-
-@dataclass
-class PortfolioResult:
-    equity: pa.Table
-    positions: pa.Table
-    trades: pa.Table
-    orders: pa.Table
-    events: pa.Table
-    correlations: pa.Table
 
 
 def simulate_portfolio(

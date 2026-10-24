@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 
 from invest.market import MONEY
-from invest.portfolio import PortfolioResult
+from invest.portfolio_types import PortfolioResult
 
 METRIC_SCHEMA = pa.schema(
     [

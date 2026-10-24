@@ -1,234 +1,64 @@
 # invest
 
-个人美股投资研究框架，使用 **Python 3.12 + uv + Parquet**。
-当前提供单标的日线 paper 账户，以及共享现金的多 ETF 策略研究：
-趋势/轮动、次日模拟成交、资金与风险核算、基准、样本外评价和可复现报告。演示和测试无需账户或密钥；
-**IBKR 是项目唯一可信的外部数据源**：行情、账户、订单、成交和费用统一以 IBKR 记录为准。
-旧 M3 的 `0.6.1` 使用 Alpaca，已因历史数据修订暂停；按用户 2026-10-23 的明确决定，
-旧账户已归档，IBKR 现金运维观察已于 17:23 完成主机验收，从 **0/60 日**开始。
-IBKR `0.7.0` 已在 VPS 完成账户、日线、分钟线和延迟报价采集，实际 Paper 订单与成交联调仍在推进。
-现有数据保留原来源，用于历史复现和旧观察存档；新来源政策见 [数据来源决策](docs/data-sources.md)。
+个人美股量化研究框架：**因子挖掘 → 信号 → 策略 → 回测 → 选股与动作**。
+直接复用 Qlib 和 Alphalens，使用 Python 3.12、uv、typed Parquet/Zstandard 与 Decimal 账户核算。
+IBKR 是新外部数据的唯一权威来源；测试和演示使用明确标记的合成行情。
 
-项目建设顺序、阶段验收和近期任务见 [项目总路线图](docs/roadmap.md)。
-量化研究重构已接通 [P1 研究数据](docs/research/p1-data.md)和
-[P2 因子挖掘与冻结排名](docs/research/p2-mining.md)：Parquet 快照经 Qlib 计算、
-Alphalens 诊断后筛选因子池并输出股票评分。[P3 统一策略与回测](docs/research/p3-backtest.md)
-接续冻结池，生成买卖动作并完成共享现金、成本和独立对账；当前建议 CLI、报告整合与旧入口清理由 P4 接续。
-M0 工程原型已通过验收，见 [M0 验收记录](docs/milestones/m0.md)。
-M1 已完成：SPY 真实历史数据、质量准入、发行方分红核对和账户回放通过本地验收，
-见 [M1 验收记录](docs/milestones/m1.md)。当前开发及主机运行版本 **`0.7.1`**，新观察切换结果见阶段记录。M2 已完成，
-见 [M2 验收记录](docs/milestones/m2.md)。首轮选定候选的留出收益为 -1.20%，
-未通过 M3 研究门槛；工程完成不表示策略可投入运行。
-M3 持续账户、原子事件日志、每日任务及恢复演练已实现；正式策略观察仍待候选资格，
-见 [M3 运行说明](docs/forward.md) 和 [阶段记录](docs/milestones/m3.md)。
-SPY 待支付分红的采集范围已修复，真实现金观察账户已登记；新一轮长窗口探索仍未取得
-策略资格，失败结果见 [R1 记录](docs/research/r1-long-horizon-results.md)。
-0.6.0 已通过归档重放、备份和状态等值校验，将原现金账户迁移至新版；账户 ID、
-5000 美元、净值高点、风险状态和旧日志均保留。Linux/systemd、Telegram 告警、心跳、
-日结及备份已实现，新增 [GitHub Actions 部署](docs/github-actions-deployment.md)，
-[0.6.1 已正式发布](https://github.com/wayslog/invest/releases/tag/v0.6.1)并部署至 Linux，
-修复服务 CLI 的时间输出错误；原账户显式迁移后，日结、对账、备份、Telegram 及健康检查通过，
-两个 systemd 定时器已启用。2026-10-22 11:33 验收时实际观察为 **1/60 日**，首次故障和恢复证据保留；
-见 [运行与部署](docs/operations.md)。2026-10-22 主机核对确认夜间持续运行正常；
-Actions 独立监控提供北京时间日报和 Parquet 状态表，复用既有 Telegram 通道通知异常及恢复。
-最新观察进度见 [运行日报](https://github.com/wayslog/invest/actions/workflows/monitor.yml)。
-2026-10-23 16:34 核查为 **2/60 日、因旧源历史数据修订暂停**，原账目与决定保持；
-见 [M4 实施时的核查记录](docs/milestones/m4.md)。
-用户随后决定直接从零开始：旧账户和运维记录归档，新账户采用独立 ID、5,000 美元虚拟现金、
-**0/60 日**与 **2026-10-23 至 2027-01-20** 的新窗口，旧 2/60 不计入。
-主机对账、定时器、Telegram、本机备份与独立监控已通过；首次日结可于北京时间 10 月 24 日 05:00 后采集。
-新观察仅检查 IBKR 只读数据链路和运行可靠性，
-不发送订单、不把券商 Paper 余额当作项目本金，见 [IBKR 现金观察](docs/ibkr-cash-observation.md)。
-仅保留本机备份。Linux 是唯一写入端，本地原账户副本已停止写入。
-失败候选的复盘及新未来验证方案见 [R1 复盘](docs/research/r1-postmortem.md)，
-外部账户条件见 [T09 核查](docs/access/t09.md)。M4 先通过 IB Gateway/TWS 接入 IBKR
-行情与账户只读数据，再验证 Paper 订单状态和成交核对；首选 SDK 为 `ib_async`。
-订阅按实际需要选择并记录成本，全免费不是选型前提。嘉信保留为后续可选接入，
-当前计划及未完成条件见 [IBKR 接入说明](docs/access/ibkr.md)。
-无桌面 VPS 的安装与首次登录见 [IB Gateway 安装说明](docs/access/ibkr-gateway.md)。
-M4 的 `0.7.0` 实现、独立 SDK 环境、Parquet 采集、执行演练与恢复命令见
-[M4 使用说明](docs/ibkr-paper.md)及[验收进度](docs/milestones/m4.md)。
+## 三个主入口
 
-## 快速开始
+| 命令 | 用途 | 核心结果 |
+| --- | --- | --- |
+| `invest mine` | 有预算地产生、诊断、淘汰候选并冻结因子池 | 全部试验、Alphalens 诊断、因子池 |
+| `invest backtest` | 用统一策略和共享现金回放冻结信号 | 动作、模拟成交、净值、独立对账、成本及参考组合 |
+| `invest decide` | 用相同规则处理指定截点的只读账户状态 | 股票排名、因子贡献、买入/加仓/减仓/卖出/持有/等待建议 |
 
-安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)（验证版本 `0.12.23`），
-在仓库根目录运行：
+三个命令均使用 `--config` 和 `--output`；`decide` 必须另给 `--as-of YYYY-MM-DD`。
+每次运行使用新目录，正式表保存为 Parquet，中文 `report.html` 展示结果和限制。
+建议包含股数、止损止盈参考、最长持有会话数、下一会话生效与到期时刻。
+它们不会改写持续账户、提交订单或自动恢复风险暂停状态。
 
-```bash
-uv sync --locked --python 3.12
-make demo
-```
-
-研究依赖与独立数据演示：
+## 完整离线演示
 
 ```bash
 uv sync --locked --python 3.12 --group research
-make quant-data-demo P1_DEMO_DIR=reports/p1-data-example
-make quant-mine-demo P2_DEMO_DIR=reports/p2-mining-example
-make quant-backtest-demo P3_DEMO_DIR=reports/p3-backtest-example
+make quant-demo P4_DEMO_DIR=reports/my-new-quant-demo
 ```
 
-演示目录必须为新目录；只使用合成行情，不更新已有账户或研究记录。
+演示完成因子挖掘、四情景成本回测、同日账户状态下的当前决策、逐行动作比较和只读重放。
+打开以下报告：
 
-云环境如默认缓存目录不可写，先运行：
+- `reports/my-new-quant-demo/research/mining/study/report.html`：候选与因子池。
+- `reports/my-new-quant-demo/research/backtest/report.html`：成本后收益、回撤、胜负、R、对账。
+- `reports/my-new-quant-demo/decision/report.html`：排名、因子贡献与动作。
+
+重新决策、只读重放和输入契约见 [P4 输出与清理](docs/research/p4-output.md)。
+账户资金从调用方提供的 Decimal 快照读取，不从 Qlib 浮点缓存重建。
+工程演示通过不代表策略赚钱；真实数据准入和独立策略评价仍需相应证据。
+
+## 保留历史与兼容入口
+
+旧 M1、M2/R1 研究从默认主入口移到 `invest legacy …`，例如：
 
 ```bash
-export UV_CACHE_DIR=/workspace/.cache/uv-invest
-export MPLCONFIGDIR=/workspace/.cache/invest-matplotlib
+uv run --locked invest legacy --help
+make demo DEMO_ACCOUNT=reports/my-new-paper-demo
+make research-demo M2_DEMO_DIR=reports/my-new-legacy-study
 ```
 
-`make demo` 使用明确标记为 `synthetic` 的人工数据，不代表真实股票或策略效果。
-示例 Parquet 随仓库提供，可用 `uv run --locked python examples/generate.py` 重新生成。
+旧趋势/轮动逻辑只服务兼容和回归，新研究统一使用 `strategies.decide` 与 `backtest`。
+`forward-*`、独立 `invest-ibkr`、已部署账户和原冻结源码保持各自职责；本次不做部署或账户迁移。
+原账户、注册、研究结果、失败记录与来源全部保留，详见 [历史工作流](docs/legacy-workflows.md)。
 
-也可以直接运行：
+## 开发与资料
 
 ```bash
-uv run --locked invest analyze examples/prices.parquet
-uv run --locked invest paper \
-  --data examples/paper_bars.parquet \
-  --config configs/demo.toml \
-  --account reports/paper-demo
+make check   # Ruff、格式、mypy、离线测试与覆盖率
+make build   # wheel 与源码包
 ```
 
-命令返回本次快照目录。打开目录内的 `report.html` 查看净值、回撤和基准比较。
-同样输入再次运行返回 `updated: false`，不新增成交或快照。
-开发中修改引擎后，M1 合成演示使用新的目录，例如 `make demo DEMO_ACCOUNT=reports/paper-v2`。
-M3 持续资金账户默认保留身份和风险历史，不能按演示方式自动清零后接续。
-2026-10-23 用户明确授权的旧现金观察归档与新 IBKR 观察登记单独记录，不属于原账户接续。
+行情、账户和私有报告位于忽略的 `data/`、`reports/`；库原生缓存仅位于可重建的 `data/cache/`。
+依赖版本由 `uv.lock` 锁定。旧账户源码指纹规则保持不变；新研究另记录金融行为版本，展示代码与其分开。
 
-## M3 持续账户与故障演练
-
-```bash
-make forward-demo
-```
-
-离线演练提前落盘的订单、延迟成交核算、重复任务、漏跑、暂停、风险锁和备份恢复。
-真实数据可用于现金运行观察；正式策略模式强制检查 M2 研究资格。
-新 IBKR 现金观察使用独立只读后端，规则见 [观察说明](docs/ibkr-cash-observation.md)。
-逐日操作、调度器命令、报告和恢复限制见 [运行说明](docs/forward.md)。
-
-## M2 多 ETF 研究
-
-```bash
-make research-demo
-```
-
-无需凭据即可生成合成数据、登记 6 个候选、运行 69 次比较并逐表重算核对。
-打开 `reports/m2-demo/study/report.html` 查看净值、回撤、敞口、利润归因和全部失败结果。
-目录不可覆盖，重复演示指定新的 `M2_DEMO_DIR`。
-
-真实研究已对 SPY/XLF 完成发行方分红核对；原研究池中的 XLK 因不支持的 due-bill 行动
-被隔离。训练/验证、2025 已知历史、2026 上半年历史留出及滚动检查分别报告；
-候选选择在留出计算前保存。完整命令、字段及限制见 [研究使用说明](docs/research/README.md)
-和 [首轮冻结方案](docs/research/m2-protocol.md)。研究结果统一保存为 Parquet。
-
-## 单标的自有 paper 账户
-
-首版是一套离线日线撮合和账户账本，可以回放历史，也可以在日线收齐后逐日追加更新。
-更新时输入截至当日的**完整累计历史**；系统校验已处理部分没有变化，再重放计算并保存
-新的完整快照。首版以正确性优先，没有引入单独的增量会计实现。
-
-- `paper` 命令为单账户单标的、美元、整股、多头与现金；多标的历史实验使用 `research`。
-- 收盘生成订单，仅在下一交易日开盘有效，计入固定每单费用和双向滑点。
-- 现金不足会缩减买单；零成交量或缺失交易日会拒绝该段历史，保留原账本。
-- 分红先计应收，在支付日才成为现金；支持整数倍正向拆股。
-- 趋势退出、单仓止损、单仓利润回撤、账户高点回撤，以及本金警戒/终止。
-- 账户状态和待成交订单跨运行保留；停用后不会因重启或价格反弹自行恢复。
-- 基准使用相同预热期、仓位上限、成交费用和企业行动，随后持续持有。
-
-`paper` 更新前强制检查日历、数据完整性和独立对账。日线开盘价仍是模拟成交代理，
-没有盘口、税费、资金结算或券商订单状态模拟；真实数据批次仅用于有明确限制的历史研究。
-
-## 既有真实数据流程（Alpaca，历史复现）
-
-以下命令是当前已实现的 Alpaca 采集与历史验收流程，不是 IBKR 接口。
-IBKR 的独立采集命令与执行演练已在 `0.7.0` 实现，见 [M4 使用说明](docs/ibkr-paper.md)。
-新表保留自己的调整口径与模式，不通过修改来源标签来替代旧输入。
-
-通过环境安全设置提供 `APCA_API_KEY_ID` 和 `APCA_API_SECRET_KEY`；云环境的凭据目的域名
-只需 `data.alpaca.markets`。不要把值写入仓库、命令行或聊天。此流程不会提交券商订单。
-
-```bash
-uv run --locked invest fetch --symbol SPY \
-  --start 2024-01-02 --end 2024-12-31 --feed sip --output data/alpaca
-```
-
-命令返回新批次路径、状态和错误摘要。`quarantined` 批次不可运行；`research_only`
-表示当前结构、日历和映射检查通过，仍需核实历史发布时点及企业行动覆盖。
-SIP 访问失败时不会自动改用 IEX，必须先确认账户数据权限和口径。
-
-把返回的路径填入下列变量，再离线复现并回放：
-
-```bash
-m1_dataset="data/alpaca/实际批次编号"
-uv run --locked invest verify-data --dataset "$m1_dataset"
-uv run --locked invest capture-dividends --output data/ssga-source.parquet
-uv run --locked invest audit-dividends --dataset "$m1_dataset" \
-  --source data/ssga-source.parquet --output reports/spy-dividends.parquet
-uv run --locked invest paper --dataset "$m1_dataset" \
-  --dividend-source data/ssga-source.parquet \
-  --config configs/spy-research.toml --account reports/spy-m1
-```
-
-`capture-dividends` 读取 State Street 公共分红表，原始响应仍保存在 Parquet 中；后续核对
-和回放均可离线运行。输出已存在时拒绝覆盖，应复用现有来源或另存新版本。
-指定 `--dividend-source` 后，分红日期、金额或支付日不一致会阻止账户更新，核对证据随
-快照保存。M1 已验证 SPY 2021—2025 年；更早的缺字段/超精度事件有明确隔离记录。
-
-逐日更新时可加 `--require-current`，缺少最近可接纳日线就拒绝更新。Alpaca 日线保守等到
-该交易日的次日纽约时间 00:15；交易所收盘本身不代表供应方整日日线已完整。
-这仍不保证发布时间或修订终结，历史回放不加此选项。
-新批次保留旧数据；若发现历史价格或企业行动修订，旧账户拒绝接续，应另开研究目录对照。
-M3 使用独立的 `forward-*` 命令记录真实接收/决策时间；引擎冻结，升级迁移仍需另行验收。
-券商 paper 属于后续阶段。
-
-## 数据、参数和输出
-
-- 数据格式及复权/分红口径：[Parquet 数据约定](docs/data.md)。
-- 日历与质量检查：[使用方法和检查边界](docs/data.md#交易日历与质量报告)。
-- 唯一可信来源与既有验收：[数据来源决策及历史记录](docs/data-sources.md)。
-- 账户状态、默认研究参数、限制及验收范围：[Paper 账户说明](docs/paper.md)。
-- 模块划分及后续方向：[架构说明](docs/architecture.md)。
-- `configs/demo.toml` 中的参数是工程演示默认值，尚未经过有效性验证。
-
-```text
-reports/paper-demo/
-├── CURRENT                    最新完整快照的编号
-└── runs/<编号>/
-    ├── bars.parquet           本次使用的全部行情
-    ├── config.parquet         实际参数快照
-    ├── manifest.parquet       引擎、输入文件校验值及版本
-    ├── equity.parquet         每日现金、持仓、应收、净值、状态、待成交订单
-    ├── trades.parquet         成交及决策日期、数量、价格、费用和原因
-    ├── events.parquet         分红、拆股、拒单及风险事件
-    ├── benchmark_trades.parquet
-    ├── metrics.parquet        汇总指标
-    ├── quality.parquet        账户输入的质量检查
-    ├── reconciliation.parquet 策略及基准逐日独立对账
-    ├── dividends.parquet      发行方分红核对（指定 --dividend-source 时）
-    ├── dividend-source.parquet 对应的原始来源证据
-    ├── dataset/               真实数据批次的完整副本（使用 --dataset 时）
-    ├── equity.png             净值和回撤图
-    └── report.html            报告
-```
-
-所有行情、账户和统计表均为 Parquet（Zstandard 压缩）。TOML 用于人工编辑参数；
-`CURRENT` 只是原子切换快照的文本指针。报告和图像用于展示，不是数据存储格式。
-
-## 开发与验证
-
-```bash
-make install     # 依据 uv.lock 安装
-make check       # Ruff、格式校验、严格 mypy、pytest 和覆盖率
-make demo        # Parquet 分析及 paper 账户
-make research-demo # 多标的离线研究及完整复现
-make forward-demo # 持续账户与合成故障演练
-make build       # wheel 与源码包
-```
-
-`uv run` 自动使用 `.venv/`。修改依赖使用 `uv add` / `uv add --dev`，并一起提交
-`pyproject.toml` 和 `uv.lock`。CI 运行相同检查，不依赖外部行情或凭据。
-测试覆盖决策与成交时序、账目守恒、跳空、成本、风险退出、分红拆股、重启幂等及写入失败。
-
-本地行情放在 `data/`，账户及研究输出放在 `reports/`，均默认忽略；公开合成样例放在
-`examples/`。笔记本只用于探索，可复用逻辑放在 `src/invest/`。
+[重构方案](docs/quantitative-research-refactor.md) · [P1 数据](docs/research/p1-data.md) ·
+[P2 因子挖掘](docs/research/p2-mining.md) · [P3 策略与回测](docs/research/p3-backtest.md) ·
+[P4 输出](docs/research/p4-output.md) · [项目路线图](docs/roadmap.md) · [数据来源](docs/data-sources.md)

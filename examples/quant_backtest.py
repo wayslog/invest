@@ -1,6 +1,7 @@
 """P3 离线验收：合成因子挖掘、冻结信号、共享策略回测与只读重放。"""
 
 import argparse
+from collections.abc import Sequence
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,10 +14,10 @@ from invest.market import BAR_SCHEMA
 from invest.research_data import load_snapshot
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    output = parser.parse_args().output.resolve()
+    output = parser.parse_args(argv).output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     if mining_demo(["--output", str(output / "mining")]):
         raise ValueError("Synthetic mining did not select any factors")

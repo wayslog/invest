@@ -195,8 +195,12 @@ ACTION_SCHEMA = research_schema(
         ("policy_id", pa.string()),
         ("pool_id", pa.string()),
         ("cancel_pending", pa.bool_()),
+        ("price_type", pa.string()),
+        ("exit_mode", pa.string()),
+        ("max_holding_sessions", pa.int32()),
+        ("cooldown_sessions", pa.int32()),
     ],
-)
+).with_metadata({b"schema_version": b"invest.research.actions.v2"})
 
 
 @dataclass(frozen=True)
