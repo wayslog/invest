@@ -12,6 +12,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from invest.alpaca_research import LIMITATIONS, freeze_execution_evidence, validate_alpaca_execution
 from invest.backtest import BacktestResult, simulate_signals
 from invest.backtest_config import BacktestConfig, load_backtest_config
 from invest.contracts import UNIVERSE, DataSnapshot, SignalFrame, research_schema
@@ -119,7 +120,7 @@ def _read_mining_source(path: Path) -> tuple[FrozenFactorPool, dict[str, Any], s
     completed_fields = {"status", "development_snapshot_id", "completed_at", "selected", "pool_id"}
     if (
         path.name != "factor_pool.parquet"
-        or origin["status"] != "selected"
+        or origin["status"] != ("selected" if pool.table.num_rows else "rejected")
         or registration["status"] != "registered"
         or origin["run_id"] != pool.metadata["run_id"]
         or origin["pool_id"] != pool.metadata["pool_id"]
@@ -170,7 +171,9 @@ def execution_inputs(
         metadata = table.schema.metadata or {}
         if metadata[b"source"].decode() != snapshot.spec.source:
             raise ValueError("Execution source cannot replace the research source")
-        if snapshot.spec.source != "synthetic" and (
+        if snapshot.spec.source == "alpaca":
+            validate_alpaca_execution(path, table)
+        elif snapshot.spec.source != "synthetic" and (
             snapshot.spec.source != "ibkr"
             or metadata.get(b"corporate_actions") != b"complete"
             or metadata.get(b"volume_unit") != b"shares"
@@ -294,7 +297,9 @@ def _tables(config: BacktestConfig, cache_root: Path) -> dict[str, pa.Table]:
                     )
                 )
             ],
-            schema=signals.table.schema,
+            schema=signals.table.schema.with_metadata(
+                {**(signals.table.schema.metadata or {}), b"selection_status": b"benchmark"}
+            ),
         )
     )
     reference_policy = replace(config.policy, top_k=len(inputs), min_score=0.0)
@@ -406,6 +411,8 @@ def run_backtest(
         "created_at": datetime.now(UTC),
         "completed_at": None,
         "limitations": list(limitations)
+        + (LIMITATIONS if snapshot.spec.source == "alpaca" else [])
+        + ([] if pool.table.num_rows else ["no_selected_factors_cash_only"])
         + [
             "daily_open_proxy",
             "prior_session_volume_proxy",
@@ -442,6 +449,7 @@ def run_backtest(
         for instrument in inputs:
             input_path = config.execution[instrument]
             shutil.copy2(input_path, output / "execution" / f"{instrument}.parquet")
+            freeze_execution_evidence(input_path, output / "execution" / f"{instrument}.parquet")
         freeze_engine(output)
         frozen = _frozen_config(output)
         frozen_pool, frozen_origin, frozen_manifest = _read_mining_source(frozen.factor_pool)

@@ -2,7 +2,8 @@
 
 个人美股量化研究框架：**因子挖掘 → 信号 → 策略 → 回测 → 选股与动作**。
 直接复用 Qlib 和 Alphalens，使用 Python 3.12、uv、typed Parquet/Zstandard 与 Decimal 账户核算。
-IBKR 是新外部数据的唯一权威来源；测试和演示使用明确标记的合成行情。
+IBKR 提供券商事实与执行行情；Alpaca SIP 历史数据用于明确标记范围的离线研究与回测。
+研究统一按 USD 计算；测试和演示使用明确标记的合成行情。
 
 ## 三个主入口
 
@@ -34,6 +35,11 @@ make quant-demo P4_DEMO_DIR=reports/my-new-quant-demo
 重新决策、只读重放和输入契约见 [P4 输出与清理](docs/research/p4-output.md)。
 账户资金从调用方提供的 Decimal 快照读取，不从 Qlib 浮点缓存重建。
 工程演示通过不代表策略赚钱；真实数据准入和独立策略评价仍需相应证据。
+IBKR 历史采集导入、企业行动回执和观察状态只读导出见
+[IBKR 输入接入](docs/research/p5-ibkr-input-contracts.md)。获准的 Alpaca 历史研究使用
+`invest import-alpaca` 接入，SPY/XLF 的真实数据结果见
+[P5 历史研究闭环](docs/research/p5-alpaca-pipeline.md)。无因子通过筛选时保留拒绝结果，
+生成现金回测和 WAIT 建议，不强行挑选因子或修改原研究门槛。
 
 ## 保留历史与兼容入口
 

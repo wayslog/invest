@@ -644,6 +644,7 @@ def run_mining(
     )
     cost_inputs = {}
     if config.cost_screen:
+        from invest.alpaca_research import freeze_execution_evidence
         from invest.backtest_study import execution_inputs
 
         cost_inputs = execution_inputs(
@@ -653,6 +654,10 @@ def run_mining(
         for instrument, table in cost_inputs.items():
             pq.write_table(
                 table, output / "execution" / f"{instrument}.parquet", compression="zstd"
+            )
+            freeze_execution_evidence(
+                config.cost_screen.execution[instrument],
+                output / "execution" / f"{instrument}.parquet",
             )
     labels = forward_labels(development, (config.horizon,))
     record["development_snapshot_id"] = development.snapshot_id

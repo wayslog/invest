@@ -313,6 +313,12 @@ def decide(
             maximum = int((nav * cap / quote.close).to_integral_value(rounding=ROUND_FLOOR))
             if current > maximum:
                 desired, reason = min(desired, maximum), "exposure_reduction"
+        if (
+            reason in {"not_selected", "not_scheduled"}
+            and current == desired == 0
+            and metadata.get(b"selection_status") == b"no_selected_factors"
+        ):
+            reason = "no_selected_factors"
         targets[instrument], reasons[instrument] = desired, reason
     selling = sorted(
         key for key in quotes if targets[key] < (holdings[key].shares if key in holdings else 0)

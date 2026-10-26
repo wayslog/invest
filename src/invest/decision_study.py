@@ -233,7 +233,7 @@ def ranking_table(
                 "exit_reason": action.get("exit_reason", ""),
                 "available_factors": count,
                 "required_factors": factor_count,
-                "coverage": count / factor_count,
+                "coverage": count / factor_count if factor_count else 0.0,
                 "data_cutoff": closing,
                 "evidence_status": "research_only",
             }
@@ -350,7 +350,8 @@ def run_decision(
         "account_eligible": False,
         "source_limitations": list(source.limitations),
         "error": "",
-        "limitations": [
+        "limitations": list(origin["limitations"])
+        + [
             "recommendations_only",
             "no_actual_execution_or_profitability_qualification",
             "broker_capture_reconciled_strategy_history_supplied"

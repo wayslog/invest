@@ -12,6 +12,7 @@ import pyarrow.compute as arrow_compute
 import pyarrow.parquet as pq
 
 from invest.contracts import (
+    FACTOR_SCHEMA,
     SIGNAL_SCHEMA,
     TIME,
     DataSnapshot,
@@ -163,8 +164,6 @@ def evaluate_signals(
 ) -> SignalEvaluation:
     """一次计算冻结表达式，各会话独立准入与横截面排名，不使用未来标签。"""
     metadata = pool.metadata
-    if not pool.table.num_rows:
-        raise ValueError("No selected factors; an empty pool cannot produce signals")
     if start < date.fromisoformat(metadata["knowledge_through"]):
         raise ValueError("Signals cannot precede the factor selection cutoff")
     snapshot = load_snapshot(snapshot.directory, expected_id=snapshot.snapshot_id)
@@ -176,10 +175,12 @@ def evaluate_signals(
     }
     if any(metadata[key] != value for key, value in expected.items()):
         raise ValueError("Signal data must match the frozen pool source, units and price basis")
-    if metadata["scope"] == "exploratory" and not allow_exploratory:
+    if "exploratory" in (metadata["scope"], snapshot.scope) and not allow_exploratory:
         raise ValueError("Exploratory factor pool requires explicit opt-in")
     if start > end or any(day not in snapshot.calendar["date"].to_pylist() for day in (start, end)):
         raise ValueError("Signal date must be a completed session in the snapshot")
+    if not pool.table.num_rows:
+        return _cash_signals(pool, snapshot, start, end, allow_exploratory)
     members = pool.table.to_pylist()
     factors = calculate_factors(
         snapshot, {r["factor"]: r["expression"] for r in members}, cache_root
@@ -271,6 +272,96 @@ def evaluate_signals(
                     **output_metadata,
                     **(CONTRIBUTION_SCHEMA.metadata or {}),
                 }
+            ),
+        ),
+    )
+
+
+def _cash_signals(
+    pool: FrozenFactorPool,
+    snapshot: DataSnapshot,
+    start: date,
+    end: date,
+    allow_exploratory: bool,
+) -> SignalEvaluation:
+    """空池是拒绝筛选后的现金方案；零分不伪造因子或改变原拒绝登记。"""
+    calendar = regular_sessions(start, end + timedelta(days=14)).to_pylist()
+    cutoffs = {
+        left["date"]: (left["close_at"], right["close_at"])
+        for left, right in zip(calendar[:-1], calendar[1:], strict=True)
+    }
+    members_history = snapshot.universe.to_pylist()
+    bars_by_day: dict[date, list[dict[str, Any]]] = {}
+    for bar in snapshot.bars.to_pylist():
+        bars_by_day.setdefault(bar["date"], []).append(bar)
+    rows: list[dict[str, Any]] = []
+    unknown_admitted = False
+    for day in snapshot.calendar["date"].to_pylist():
+        if not start <= day <= end:
+            continue
+        close, expiry = cutoffs[day]
+        members = {
+            row["instrument"]
+            for row in members_history
+            if row["start"] <= day <= row["end"]
+            and (
+                (row["available_at"] is None and allow_exploratory)
+                or (row["available_at"] is not None and row["available_at"] <= close)
+            )
+        }
+        eligible = sorted(
+            row["instrument"]
+            for row in bars_by_day[day]
+            if row["date"] == day
+            and row["instrument"] in members
+            and (
+                (row["available_at"] is None and allow_exploratory)
+                or (row["available_at"] is not None and row["available_at"] <= close)
+            )
+        )
+        unknown_admitted |= any(
+            row["instrument"] in eligible and row["available_at"] is None
+            for row in bars_by_day[day]
+        ) or any(
+            row["instrument"] in eligible
+            and row["start"] <= day <= row["end"]
+            and row["available_at"] is None
+            for row in members_history
+        )
+        rows.extend(
+            {
+                "date": day,
+                "instrument": instrument,
+                "score": 0.0,
+                "rank": rank,
+                "direction": 0,
+                "horizon": int(pool.metadata["horizon"]),
+                "available_at": close,
+                "expires_at": expiry,
+                "pool_id": pool.metadata["pool_id"],
+            }
+            for rank, instrument in enumerate(eligible, 1)
+        )
+    metadata = {
+        **snapshot.metadata(SIGNAL_SCHEMA),
+        b"scope": b"exploratory"
+        if unknown_admitted or pool.metadata["scope"] == "exploratory"
+        else snapshot.scope.encode(),
+        b"pool_id": pool.metadata["pool_id"].encode(),
+        b"evidence_status": b"research_only",
+        b"selection_status": b"no_selected_factors",
+    }
+    return SignalEvaluation(
+        SignalFrame(pa.Table.from_pylist(rows, schema=SIGNAL_SCHEMA.with_metadata(metadata))),
+        FactorFrame(
+            pa.Table.from_pylist(
+                [], schema=FACTOR_SCHEMA.with_metadata(snapshot.metadata(FACTOR_SCHEMA))
+            )
+        ),
+        pa.Table.from_pylist(
+            [],
+            schema=CONTRIBUTION_SCHEMA.with_metadata(
+                {**metadata, **(CONTRIBUTION_SCHEMA.metadata or {})}
             ),
         ),
     )

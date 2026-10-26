@@ -25,6 +25,22 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--output", type=Path, required=True)
     capture.add_argument("--bar-size", choices=["1 day", "1 min", "5 mins", "15 mins", "1 hour"])
     capture.add_argument("--duration")
+    events = commands.add_parser("events-capture", help="Read-only IBKR corporate-action receipts")
+    events.add_argument("--config", type=Path, default=Path("configs/ibkr.toml"))
+    events.add_argument("--capture", type=Path, required=True)
+    events.add_argument("--output", type=Path, required=True)
+    events.add_argument("--client-id", type=int, default=74)
+    market = commands.add_parser(
+        "market-import", help="Import frozen IBKR bars into a research snapshot"
+    )
+    market.add_argument("--capture", type=Path, required=True)
+    market.add_argument("--output", type=Path, required=True)
+    market.add_argument("--allow-exploratory", action="store_true")
+    observation = commands.add_parser(
+        "observation-export", help="Export an existing cash observation read-only"
+    )
+    observation.add_argument("--account", type=Path, required=True)
+    observation.add_argument("--output", type=Path, required=True)
     for name in ("init", "submit", "cancel", "reconcile"):
         command = commands.add_parser(name)
         command.add_argument("--config", type=Path, default=Path("configs/ibkr.toml"))
@@ -51,6 +67,29 @@ def parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    if args.command == "market-import":
+        from invest.research_data import snapshot_from_ibkr
+
+        snapshot = snapshot_from_ibkr(
+            args.capture, args.output, allow_exploratory=args.allow_exploratory
+        )
+        return {
+            "snapshot": str(snapshot.directory),
+            "snapshot_id": snapshot.snapshot_id,
+            "source": snapshot.spec.source,
+            "scope": snapshot.scope,
+            "limitations": snapshot.limitations,
+        }
+    if args.command == "observation-export":
+        from invest.observation_export import export_observation
+
+        return export_observation(args.account, args.output)
+    if args.command == "events-capture":
+        from invest.ibkr_events import capture_events
+
+        return capture_events(
+            replace(read_config(args.config), client_id=args.client_id), args.capture, args.output
+        )
     if args.command == "demo":
         from invest.ibkr_synthetic import run_demo
 
@@ -154,6 +193,8 @@ def main() -> None:
     except (OSError, ValueError, KeyError) as error:
         raise SystemExit(f"IBKR operation failed: {error}") from None
     print(json.dumps(result, default=str, sort_keys=True))
+    if args.command == "events-capture" and result["status"] != "captured":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -55,11 +55,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         command = commands.add_parser(name, help="Verify and replay a frozen research result")
         command.add_argument("--study", type=Path, required=True)
     commands.add_parser("legacy", help="Explicit legacy research and account compatibility")
+    imported = commands.add_parser("import-alpaca", help="Import verified historical research data")
+    imported.add_argument("--dataset", action="append", required=True, metavar="SYMBOL=PATH")
+    imported.add_argument("--issuer", type=Path, required=True)
+    imported.add_argument("--split-reference", type=Path, required=True)
+    imported.add_argument("--output", type=Path, required=True)
+    imported.add_argument("--allow-exploratory", action="store_true")
     args = parser.parse_args(values)
     exit_code = 0
     try:
         with redirect_stdout(sys.stderr):
-            if args.command == "mine":
+            if args.command == "import-alpaca":
+                from invest.alpaca_research import import_alpaca_research
+
+                datasets = {}
+                for value in args.dataset:
+                    symbol, separator, path = value.partition("=")
+                    if not separator or not path or symbol in datasets:
+                        raise ValueError("Datasets must be distinct SYMBOL=PATH entries")
+                    datasets[symbol] = Path(path)
+                snapshot = import_alpaca_research(
+                    datasets,
+                    args.issuer,
+                    args.split_reference,
+                    args.output,
+                    allow_exploratory=args.allow_exploratory,
+                )
+                output = {
+                    "snapshot": str(snapshot.directory),
+                    "snapshot_id": snapshot.snapshot_id,
+                    "source": snapshot.spec.source,
+                    "scope": snapshot.scope,
+                }
+            elif args.command == "mine":
                 from invest.factor_mining import run_mining
 
                 output = asdict(run_mining(args.config, args.output))

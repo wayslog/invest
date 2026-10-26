@@ -745,3 +745,50 @@ def test_invalid_mining_configuration_creates_no_study(tmp_path: Path, change: s
     with pytest.raises(ValueError):
         run_mining(config, tmp_path / "invalid", cache_root=tmp_path / "cache")
     assert not (tmp_path / "invalid").exists()
+
+
+def test_empty_pool_keeps_source_cutoff_and_exploratory_admission(tmp_path: Path) -> None:
+    from invest.signals import evaluate_signals, freeze_factor_pool
+
+    data = research_snapshot(tmp_path)
+    day = data.calendar["date"][-1].as_py()
+    closing = data.calendar["close_at"][-1].as_py()
+    pool = freeze_factor_pool(
+        [],
+        {
+            "snapshot_id": data.snapshot_id,
+            "source": "synthetic",
+            "price_basis": "raw",
+            "scope": "synthetic",
+            "volume_unit": "shares",
+            "currency": "USD",
+            "run_id": "rejected_test",
+            "knowledge_through": day.isoformat(),
+            "horizon": "3",
+        },
+    )
+    with pytest.raises(ValueError, match="selection cutoff"):
+        evaluate_signals(pool, data, data.calendar["date"][-2].as_py(), day)
+    rows = data.bars.to_pylist()
+    for row in rows:
+        if row["date"] == day and row["instrument"] == "SYNTH1":
+            row["available_at"] = closing + timedelta(microseconds=1)
+        if row["date"] == day and row["instrument"] == "SYNTH2":
+            row["available_at"] = None
+    changed = create_snapshot(
+        pa.Table.from_pylist(rows, schema=data.bars.schema),
+        data.universe,
+        tmp_path / "changed",
+        data.spec,
+        allow_exploratory=True,
+    )
+    strict = evaluate_signals(pool, changed, day, day)
+    assert strict.signals.table.num_rows == 6
+    assert "SYNTH2" not in strict.signals.table["instrument"].to_pylist()
+    result = evaluate_signals(pool, changed, day, day, allow_exploratory=True)
+    assert result.signals.table.num_rows == 7
+    assert "SYNTH1" not in result.signals.table["instrument"].to_pylist()
+    assert "SYNTH2" in result.signals.table["instrument"].to_pylist()
+    assert set(result.signals.table["direction"].to_pylist()) == {0}
+    assert not result.factors.table.num_rows and not result.contributions.num_rows
+    assert result.signals.table.schema.metadata[b"scope"] == b"exploratory"

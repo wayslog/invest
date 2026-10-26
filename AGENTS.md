@@ -16,6 +16,12 @@
   Zstandard compression, including market data, factor and signal tables, actions,
   and ledgers. Configuration is TOML; do not add CSV or other text-table business
   data paths.
+- Research and backtests cover U.S. stocks and ETFs and calculate all amounts in
+  USD. Missing provider currency fields are not an admission blocker in this
+  scope; normalized research data may declare USD as a project convention without
+  an additional currency lookup. Preserve raw fields and historical records;
+  do not describe the convention as a provider-returned currency. Foreign-exchange
+  conversion and multi-currency research are out of scope.
 - Third-party libraries such as Qlib may use rebuildable native-format caches,
   including binary features and text calendars or instrument lists. Derive them
   from authoritative Parquet snapshots and recorded configuration; keep them in
@@ -28,11 +34,13 @@
   registrations, provenance, journals, risk history, frozen inputs and results.
   Cache generation, cleanup or rebuilding must not overwrite, relabel or delete
   those records, reset capital or risk state, or alter out-of-sample status.
-- IBKR is the sole authoritative external source for market data, accounts, orders,
-  fills and costs. Keep other providers only as labeled historical/reference data;
-  do not silently substitute or merge them into IBKR records. The existing Alpaca
-  implementation and frozen observations are legacy evidence, not an implemented
-  IBKR connection. Preserve their original provenance, registrations and journals.
+- IBKR is the authoritative source for broker accounts, orders, fills, costs and
+  execution market data. Alpaca SIP history is explicitly permitted for offline
+  quantitative research and backtests, with issuer dividend evidence and recorded
+  corporate-action coverage. Keep its source as alpaca and its exploratory scope;
+  do not substitute or merge it into IBKR records or broker execution. Freeze raw
+  captures and validation evidence with research results. Preserve all legacy
+  provenance, registrations, journals and out-of-sample status.
 - Paper fills must follow the decision session. Preserve Decimal accounting,
   append-only history and restart idempotency. Keep synthetic and real data explicit.
 - Account snapshots are tied to engine source and parameters. After changing engine

@@ -10,7 +10,7 @@ def frozen_case(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
     return decision_case(tmp_path_factory.mktemp("decision_case"))
 
 
-def decision_case(root: Path, *, broker: bool = False) -> tuple[Path, Path]:
+def decision_case(root: Path, *, broker: bool = False, empty: bool = False) -> tuple[Path, Path]:
     from decimal import Decimal
 
     import pyarrow as pa
@@ -22,7 +22,10 @@ def decision_case(root: Path, *, broker: bool = False) -> tuple[Path, Path]:
     from tests.test_factor_mining import mining_config, research_snapshot
 
     snapshot = research_snapshot(root, instrument_prefix="IBKR" if broker else "SYNTH")
-    run_mining(mining_config(root, snapshot), root / "mine", cache_root=root / "cache")
+    mining = mining_config(root, snapshot)
+    if empty:
+        mining.write_text(mining.read_text() + "max_depth = 1\n")
+    run_mining(mining, root / "mine", cache_root=root / "cache")
     days = snapshot.calendar["date"].to_pylist()
     mapping = []
     for instrument in snapshot.universe["instrument"].to_pylist():
@@ -78,6 +81,31 @@ context = "backtest/decision_contexts.parquet"
 known_through = {days[139]}
 """)
     return study.directory, config
+
+
+def test_rejected_pool_completes_cash_backtest_and_wait_actions(tmp_path: Path) -> None:
+    import pyarrow.parquet as pq
+
+    from invest.backtest_study import verify_backtest
+    from invest.decision_study import run_decision, verify_decision
+
+    study, config = decision_case(tmp_path, empty=True)
+    registration = (tmp_path / "mine" / "run.parquet").read_bytes()
+    assert pq.read_table(tmp_path / "mine" / "run.parquet")["status"].to_pylist() == ["rejected"]
+    assert pq.read_table(study / "fills.parquet").num_rows == 0
+    assert pq.read_table(study / "equal_weight_fills.parquet").num_rows > 0
+    assert set(pq.read_table(study / "equity.parquet")["equity"].to_pylist()) == {5000}
+    assert verify_backtest(study, cache_root=tmp_path / "cache")["status"] == "verified"
+    day = pq.read_table(study / "decision_contexts.parquet")["date"][-1].as_py()
+    output = tmp_path / "decision"
+    assert run_decision(config, output, day, cache_root=tmp_path / "cache").status == "completed"
+    actions = pq.read_table(output / "actions.parquet").to_pylist()
+    assert actions and {row["action"] for row in actions} == {"WAIT"}
+    assert {row["reason"] for row in actions} == {"no_selected_factors"}
+    ranks = pq.read_table(output / "rankings.parquet").to_pylist()
+    assert all(not row["selected"] and row["coverage"] == 0 for row in ranks)
+    assert verify_decision(output, cache_root=tmp_path / "cache")["status"] == "verified"
+    assert (tmp_path / "mine" / "run.parquet").read_bytes() == registration
 
 
 def test_factor_contributions_explain_the_exact_signal_score(tmp_path: Path) -> None:
