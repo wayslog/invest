@@ -300,10 +300,17 @@ def _normalize(
                 for action_kind, entries in groups.items():
                     if not isinstance(entries, list):
                         raise ValueError("Invalid corporate-action response")
-                    if entries and action_kind not in {"cash_dividends", "forward_splits"}:
-                        raise ValueError(f"Unsupported corporate action: {action_kind}")
                     for value in entries:
                         item = object_map(value)
+                        if action_kind not in {"cash_dividends", "forward_splits"}:
+                            # 新研究从空仓开始；已知的区间前分拆保留原文，不产生持仓权益。
+                            if (
+                                action_kind == "spin_offs"
+                                and item.get("source_symbol") == spec.symbol
+                                and date_value(item.get("ex_date")) < spec.start
+                            ):
+                                continue
+                            raise ValueError(f"Unsupported corporate action: {action_kind}")
                         session = date_value(item.get("ex_date"))
                         if item.get("symbol") != spec.symbol:
                             raise ValueError("Corporate action lacks matching symbol/session")

@@ -49,7 +49,10 @@ def _equity_chart(directory: Path) -> str:
         ("equal_weight", "equal_weight_"),
         ("cash", "cash_"),
         ("double_cost", "double_cost_"),
+        ("spy_reference", "spy_reference_"),
     ):
+        if not (directory / f"{prefix}equity.parquet").is_file():
+            continue
         rows = pq.read_table(directory / f"{prefix}equity.parquet").to_pylist()
         dates = [row["date"] for row in rows]
         axes[0].plot(dates, [float(row["equity"]) for row in rows], label=scenario)
@@ -62,7 +65,13 @@ def _equity_chart(directory: Path) -> str:
     figure.savefig(directory / "equity.png", dpi=130)
     return (
         "<p>strategy：策略；equal_weight：同风险规则等权参考；cash：现金；"
-        'double_cost：双倍费用与滑点。</p><img src="equity.png" alt="净值与回撤">'
+        "double_cost：双倍费用与滑点。"
+        + (
+            "spy_reference：SPY 同期参考。"
+            if (directory / "spy_reference_equity.parquet").is_file()
+            else ""
+        )
+        + '</p><img src="equity.png" alt="净值与回撤">'
     )
 
 

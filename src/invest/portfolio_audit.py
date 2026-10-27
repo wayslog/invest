@@ -1,7 +1,7 @@
 """Independent reconstruction of shared cash, holdings and profit attribution."""
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any
 
@@ -75,6 +75,10 @@ def audit_backtest(
     initial_cash: Decimal,
     *,
     availability: pa.Table | None = None,
+    decision_times: dict[date, datetime] | None = None,
+    cash_sweep: str | None = None,
+    atr_stops: dict[date, dict[str, Decimal]] | None = None,
+    allow_sparse_inputs: bool = False,
 ) -> tuple[pa.Table, pa.Table, pa.Table]:
     """从原始企业行动和成交独立重建，不调用 Account 或策略决策。"""
     return _reconstruct(
@@ -85,6 +89,10 @@ def audit_backtest(
         policy.slippage_bps,
         policy=policy,
         availability=availability,
+        decision_times=decision_times,
+        cash_sweep=cash_sweep,
+        atr_stops=atr_stops,
+        allow_sparse_inputs=allow_sparse_inputs,
     )
 
 
@@ -98,11 +106,23 @@ def _reconstruct(
     gap_bps: int = 0,
     policy: Policy | None = None,
     availability: pa.Table | None = None,
+    decision_times: dict[date, datetime] | None = None,
+    cash_sweep: str | None = None,
+    atr_stops: dict[date, dict[str, Decimal]] | None = None,
+    allow_sparse_inputs: bool = False,
 ) -> tuple[pa.Table, pa.Table, pa.Table]:
     unit, zero = Decimal(".000001"), Decimal(0)
     symbols = sorted(inputs)
+    if cash_sweep is not None and (policy is None or cash_sweep not in inputs):
+        raise ValueError("Cash sweep audit requires its policy and execution prices")
+    if atr_stops is not None and (policy is None or cash_sweep is None or policy.stop_loss != 0):
+        raise ValueError("ATR audit requires cash sweep and no fixed stop")
     bars = {s: {r["date"]: r for r in inputs[s].to_pylist()} for s in symbols}
     all_dates = inputs[symbols[0]]["date"].to_pylist()
+    if allow_sparse_inputs:
+        if not decision_times:
+            raise ValueError("Sparse audit requires an explicit decision calendar")
+        all_dates = sorted(decision_times)
     closes = (
         {
             row["date"]: row["close_at"]
@@ -116,6 +136,13 @@ def _reconstruct(
         if availability is not None
         else {}
     )
+    if decision_times:
+        calendar = regular_sessions(all_dates[0], all_dates[-1]).to_pylist()
+        for left, right in zip(calendar[:-1], calendar[1:], strict=True):
+            cutoff = decision_times.get(left["date"], left["close_at"])
+            if not left["close_at"] <= cutoff < right["open_at"]:
+                raise ValueError("Audit decision time must precede the next execution open")
+            closes[left["date"]] = cutoff
     previous = dict(zip(all_dates[1:], all_dates[:-1], strict=True))
     nav = result.equity.to_pylist()
     dates = [r["date"] for r in nav]
@@ -164,7 +191,11 @@ def _reconstruct(
     for snapshot in nav:
         session = snapshot["date"]
         for s in symbols:
-            row = bars[s][session]
+            row = bars[s].get(session)
+            if row is None:
+                if shares[s] or not allow_sparse_inputs:
+                    raise ValueError(f"Missing held audit price: {s} {session}")
+                continue
             shares[s] *= row["split_ratio"]
             entry[s] /= row["split_ratio"]
             position_income[s] /= row["split_ratio"]
@@ -215,6 +246,8 @@ def _reconstruct(
             s, quantity = trade["symbol"], trade["quantity"]
             if s not in shares or quantity <= 0 or trade["side"] not in {"buy", "sell"}:
                 raise ValueError("Invalid portfolio execution identity/quantity")
+            if session not in bars[s] or previous[session] not in bars[s]:
+                raise ValueError("Execution lacks observed current or previous prices")
             intent = intents.get(trade["order_id"] if policy else (previous[session], s))
             valid = (
                 trade["decision_date"] == previous[session]
@@ -275,6 +308,8 @@ def _reconstruct(
                     Decimal(volume_used[s] <= limit and trade["volume_limit"] == limit),
                 )
                 if trade["phase"] != "open":
+                    if s == cash_sweep:
+                        raise ValueError("Cash sweep cannot use stock protective orders")
                     levels = []
                     if policy.stop_loss:
                         levels.append(
@@ -288,6 +323,17 @@ def _reconstruct(
                             )
                         )
                     stop, reason = max(levels, key=lambda item: item[0]) if levels else (zero, "")
+                    if atr_stops is not None:
+                        distance = atr_stops[previous[session]].get(s)
+                        if distance is None or not distance.is_finite() or distance <= 0:
+                            raise ValueError("ATR audit lacks a previous-session risk distance")
+                        atr_stop = (
+                            entry[s]
+                            - distance / bars[s][session]["split_ratio"]
+                            - position_income[s]
+                        )
+                        if atr_stop > 0 and atr_stop > stop:
+                            stop, reason = atr_stop, "atr_stop"
                     profit = (
                         entry[s] * (1 + policy.take_profit) - position_income[s]
                         if policy.take_profit
@@ -336,13 +382,27 @@ def _reconstruct(
                     )
                 check(session, f"{s}:base_price", base, trade["base_price"])
                 if direction == 1:
-                    value = sum((shares[key] * bars[key][session]["open"] for key in symbols), zero)
+                    value = sum(
+                        (
+                            shares[key] * bars[key][session]["open"]
+                            for key in symbols
+                            if shares[key]
+                        ),
+                        zero,
+                    )
                     nav_open = cash + value + sum((amount for _, _, amount in receivables), zero)
+                    sweep_value = (
+                        shares[cash_sweep] * bars[cash_sweep][session]["open"]
+                        if cash_sweep is not None
+                        else zero
+                    )
                     budget = max(
                         zero,
-                        min(
+                        min(cash - unsettled, nav_open - value)
+                        if s == cash_sweep
+                        else min(
                             cash - unsettled,
-                            nav_open * policy.allocation - value,
+                            nav_open * policy.allocation - (value - sweep_value),
                             nav_open * policy.position_cap - shares[s] * bars[s][session]["open"],
                         ),
                     )
@@ -388,7 +448,15 @@ def _reconstruct(
                 cycles[s]["realized_pnl"] -= amount + fee
                 if policy:
                     # R 的分母累计每次加仓时的固定止损风险；禁用固定止损时不报告 R。
-                    cycles[s]["risk_budget"] += quantity * trade["price"] * policy.stop_loss
+                    if atr_stops is not None and s != cash_sweep:
+                        distance = atr_stops[previous[session]].get(s)
+                        if distance is None:
+                            raise ValueError("ATR audit lacks entry risk distance")
+                        cycles[s]["risk_budget"] += (
+                            quantity * distance / bars[s][session]["split_ratio"]
+                        )
+                    else:
+                        cycles[s]["risk_budget"] += quantity * trade["price"] * policy.stop_loss
             else:
                 if quantity > shares[s]:
                     raise ValueError("Audit detected a short position")
@@ -423,7 +491,7 @@ def _reconstruct(
             check(session, "cash_not_borrowed", Decimal(1), Decimal(cash >= 0))
         total_market, outstanding, total_profit = zero, zero, zero
         for s in symbols:
-            value = (shares[s] * bars[s][session]["close"]).quantize(unit)
+            value = (shares[s] * bars[s][session]["close"]).quantize(unit) if shares[s] else zero
             unpaid = sum((a for symbol, _, a in receivables if symbol == s), zero)
             position = positions[session, s]
             check(session, f"{s}:shares", Decimal(shares[s]), Decimal(position["shares"]))

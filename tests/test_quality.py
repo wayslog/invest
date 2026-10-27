@@ -4,8 +4,10 @@ import sys
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import exchange_calendars as xcals
 import pyarrow.parquet as pq
 import pytest
+from exchange_calendars.exchange_calendar import ExchangeCalendar
 
 from invest.quality import (
     audit_bars,
@@ -34,6 +36,35 @@ def test_dst_keeps_local_open_but_changes_utc() -> None:
     assert rows[0]["open_at"] == datetime(2024, 3, 8, 14, 30, tzinfo=UTC)
     assert rows[1]["open_at"] == datetime(2024, 3, 11, 13, 30, tzinfo=UTC)
     assert not any(row["early_close"] for row in rows)
+
+
+def test_overlapping_ranges_reuse_calendar_and_preserve_holiday_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import invest.quality as quality
+
+    factory = xcals.get_calendar
+    calls = []
+
+    def counted(name: str, *, start: date, end: date) -> ExchangeCalendar:
+        calls.append((start, end))
+        return factory(name, start=start, end=end)
+
+    quality.regular_sessions.cache_clear()
+    quality._xnys_calendar.cache_clear()
+    monkeypatch.setattr(xcals, "get_calendar", counted)
+    try:
+        first = regular_sessions(date(2024, 12, 24), date(2024, 12, 26)).to_pylist()
+        second = regular_sessions(date(2024, 12, 26), date(2024, 12, 31)).to_pylist()
+        assert [r["date"].day for r in first] == [24, 26]
+        assert first[0]["close_at"] == datetime(2024, 12, 24, 18, tzinfo=UTC)
+        assert [r["date"].day for r in second] == [26, 27, 30, 31]
+        assert len(calls) == 1
+        assert regular_sessions(date(2025, 1, 1), date(2025, 1, 1)).num_rows == 0
+        assert regular_sessions(date(2025, 1, 9), date(2025, 1, 9)).num_rows == 0
+    finally:
+        quality.regular_sessions.cache_clear()
+        quality._xnys_calendar.cache_clear()
 
 
 def test_range_and_timezone_are_explicit() -> None:

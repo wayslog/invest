@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pyarrow as pa
 
+from invest.cash_sweep import cash_sweep_plan
 from invest.config import PaperConfig
 from invest.contracts import (
     AccountSnapshot,
@@ -32,6 +33,7 @@ from invest.quality import regular_sessions
 from invest.research_data import identity
 from invest.risk import exit_levels
 from invest.strategies import Policy, decide
+from invest.weekly_selection import WeeklySelection
 
 FILL_SCHEMA = research_schema(
     "portfolio_fills",
@@ -89,25 +91,63 @@ def simulate_signals(
     account_id: str = "research_account",
     universe: pa.Table | None = None,
     availability: pa.Table | None = None,
+    selections: dict[date, WeeklySelection] | None = None,
+    cash_sweep: str | None = None,
+    risk_caps: dict[date, dict[str, Decimal]] | None = None,
+    atr_stops: dict[date, dict[str, Decimal]] | None = None,
+    allow_sparse_inputs: bool = False,
 ) -> BacktestResult:
     """日线开盘代理成交；单标的与多标的共用此实现，最后收盘只产生待执行计划。"""
     if not inputs:
         raise ValueError("Backtest requires at least one execution instrument")
+    if cash_sweep is not None and (cash_sweep not in inputs or selections is None):
+        raise ValueError("Cash sweep requires its execution data and weekly selections")
+    if risk_caps is not None and cash_sweep is None:
+        raise ValueError("Risk caps require cash sweep")
+    if atr_stops is not None and (
+        cash_sweep is None or policy.stop_loss != 0 or policy.exit_mode != "protective"
+    ):
+        raise ValueError("ATR stops require cash sweep and a protective policy without fixed stops")
     symbols = sorted(inputs)
     metadata = signals.table.schema.metadata or {}
+    if not metadata.get(b"pool_id") or any(
+        value.encode() != metadata[b"pool_id"] for value in signals.table["pool_id"].to_pylist()
+    ):
+        raise ValueError("Signals require one matching frozen factor pool")
+    signal_indices: dict[date, list[int]] = {}
+    for row_index, signal_day in enumerate(signals.table["date"].to_pylist()):
+        signal_indices.setdefault(signal_day, []).append(row_index)
     for symbol, table in inputs.items():
         validate_bars(table, symbol)
         if (table.schema.metadata or {})[b"source"] != metadata[b"source"]:
             raise ValueError("Execution and signal sources must match")
     dates = inputs[symbols[0]]["date"].to_pylist()
+    if allow_sparse_inputs:
+        if selections is None:
+            raise ValueError("Sparse execution requires an explicit decision calendar")
+        dates = sorted(selections)
     if dates != regular_sessions(dates[0], dates[-1])["date"].to_pylist() or any(
-        inputs[s]["date"].to_pylist() != dates for s in symbols
+        (not set(inputs[s]["date"].to_pylist()) <= set(dates))
+        if allow_sparse_inputs
+        else inputs[s]["date"].to_pylist() != dates
+        for s in symbols
     ):
         raise ValueError("Execution inputs require complete identical XNYS sessions")
     if start not in dates or end not in dates or start > end or dates.index(start) < 1:
         raise ValueError("Backtest needs a preceding decision session and covered evaluation range")
     first, last = dates.index(start), dates.index(end)
-    rows = {symbol: table.to_pylist() for symbol, table in inputs.items()}
+    if selections is not None and set(selections) != set(dates[first - 1 : last + 1]):
+        raise ValueError("Weekly replay requires a selection context for every decision session")
+    if any(
+        values is not None and set(values) != set(dates[first - 1 : last + 1])
+        for values in (risk_caps, atr_stops)
+    ):
+        raise ValueError("Risk inputs require every decision session")
+    rows = {
+        symbol: [mapping.get(day, {}) for day in dates]
+        for symbol, table in inputs.items()
+        for mapping in [{row["date"]: row for row in table.to_pylist()}]
+    }
     calendars = regular_sessions(dates[0], end + timedelta(days=14)).to_pylist()
     next_days = {
         left["date"]: right["date"]
@@ -147,8 +187,15 @@ def simulate_signals(
     actions = []
     contexts = []
 
+    def held_value(symbol: str, index: int, field: str) -> Decimal:
+        if not ledgers[symbol].shares:
+            return ZERO
+        if not rows[symbol][index]:
+            raise ValueError(f"Missing held execution price: {symbol} {dates[index]}")
+        return cast(Decimal, ledgers[symbol].shares * rows[symbol][index][field])
+
     def valuation(index: int, field: str) -> tuple[Decimal, Decimal, Decimal]:
-        market = money(sum((ledgers[s].shares * rows[s][index][field] for s in symbols), ZERO))
+        market = money(sum((held_value(s, index, field) for s in symbols), ZERO))
         unpaid = money(sum((amount for s in symbols for _, amount in ledgers[s].receivables), ZERO))
         return market, unpaid, money(cash + market + unpaid)
 
@@ -199,11 +246,18 @@ def simulate_signals(
             ledger.pending.quantity = quantity
             market, _, nav = valuation(index, "open")
             available = cash - sum((amount for _, amount in unsettled), ZERO)
+            sweep_value = (
+                ledgers[cash_sweep].shares * rows[cash_sweep][index]["open"]
+                if cash_sweep is not None
+                else ZERO
+            )
             budget = max(
                 ZERO,
-                min(
+                min(available, nav - market)
+                if symbol == cash_sweep
+                else min(
                     available,
-                    nav * policy.allocation - market,
+                    nav * policy.allocation - (market - sweep_value),
                     nav * policy.position_cap - ledger.shares * rows[symbol][index]["open"],
                 ),
             )
@@ -266,7 +320,7 @@ def simulate_signals(
             return
         for symbol in symbols:
             ledger, bar = ledgers[symbol], rows[symbol][index]
-            if not ledger.shares or symbol in protected:
+            if not ledger.shares or symbol in protected or symbol == cash_sweep:
                 continue
             stop, profit, stop_reason = exit_levels(
                 ledger.entry,
@@ -276,6 +330,13 @@ def simulate_signals(
                 policy.trailing_stop,
                 policy.take_profit,
             )
+            if atr_stops is not None:
+                distance = atr_stops[dates[index - 1]].get(symbol)
+                if distance is None or not distance.is_finite() or distance <= 0:
+                    raise ValueError("ATR stop missing for a held security")
+                atr_stop = ledger.entry - distance / bar["split_ratio"] - ledger.position_income
+                if atr_stop > 0 and (stop is None or atr_stop > stop):
+                    stop, stop_reason = atr_stop, "atr_stop"
             price, reason = None, ""
             if stop is not None and bar["open"] <= stop:
                 price, reason = bar["open"], stop_reason
@@ -327,12 +388,48 @@ def simulate_signals(
 
     for index in range(first - 1, last + 1):
         day = dates[index]
+        cutoff = selections[day].decision_at if selections is not None else close_times[day]
         spent_volume = dict.fromkeys(symbols, 0)
         unsettled = [(payment, amount) for payment, amount in unsettled if payment > day]
         if index >= first:
             anchors = {position.instrument: position for position in state.positions}
             for symbol in symbols:
                 ledger, bar = ledgers[symbol], rows[symbol][index]
+                if not bar:
+                    if ledger.shares:
+                        raise ValueError(f"Missing held execution price: {symbol} {day}")
+                    for payment, amount in ledger.receivables:
+                        if payment <= day:
+                            cash += amount
+                            events.append(
+                                {
+                                    "date": day,
+                                    "symbol": symbol,
+                                    "kind": "dividend_payment",
+                                    "detail": "Receivable credited without a price observation",
+                                    "amount": money(amount),
+                                }
+                            )
+                    ledger.receivables = [
+                        (payment, amount) for payment, amount in ledger.receivables if payment > day
+                    ]
+                    for missing in [item for item in pending if item["instrument"] == symbol]:
+                        outcomes.append(
+                            {
+                                "date": day,
+                                "order_id": missing["action_id"],
+                                "requested": missing["quantity"],
+                                "filled": 0,
+                                "status": "rejected",
+                                "reason": "missing_execution_price",
+                            }
+                        )
+                        event(
+                            day, symbol, "missing_execution_price", "Order cancelled without a fill"
+                        )
+                    pending = [item for item in pending if item["instrument"] != symbol]
+                    ledger.pending = None
+                    continue
                 item = next((item for item in pending if item["instrument"] == symbol), None)
                 ledger.pending = (
                     Order(
@@ -400,7 +497,7 @@ def simulate_signals(
                             (member["available_at"] is None and policy.allow_exploratory)
                             or (
                                 member["available_at"] is not None
-                                and member["available_at"] <= close_times[day]
+                                and member["available_at"] <= cutoff
                             )
                         )
                         for member in members
@@ -412,12 +509,13 @@ def simulate_signals(
                             (known.get((day, symbol)) is None and policy.allow_exploratory)
                             or (
                                 known.get((day, symbol)) is not None
-                                and known[day, symbol] <= close_times[day]
+                                and known[day, symbol] <= cutoff
                             )
                         )
                     ),
                 )
                 for symbol in symbols
+                if rows[symbol][index]
             ),
             tuple(
                 Holding(symbol, ledger.shares, ledger.entry, ledger.position_income)
@@ -428,7 +526,30 @@ def simulate_signals(
             unsettled_cash=sum((amount for _, amount in unsettled), ZERO),
         )
         contexts.append((account, state))
-        plan = decide(signals, account, state, policy)
+        # 决策只读取本会话信号；全集来源及池身份已在入口校验。
+        daily_signals = SignalFrame(
+            signals.table.take(pa.array(signal_indices.get(day, []), type=pa.int64()))
+        )
+        if cash_sweep is not None:
+            assert selections is not None
+            plan = cash_sweep_plan(
+                daily_signals,
+                account,
+                state,
+                policy,
+                selections[day],
+                instrument=cash_sweep,
+                risk_caps=risk_caps[day] if risk_caps is not None else None,
+                atr_stops=atr_stops[day] if atr_stops is not None else None,
+            )
+        else:
+            plan = decide(
+                daily_signals,
+                account,
+                state,
+                policy,
+                selection=selections[day] if selections is not None else None,
+            )
         actions.append(plan.actions)
         prior_status = state.risk_status
         state = plan.state
@@ -468,9 +589,9 @@ def simulate_signals(
                     "date": day,
                     "symbol": symbol,
                     "shares": ledger.shares,
-                    "market_value": money(ledger.shares * rows[symbol][index]["close"]),
+                    "market_value": money(held_value(symbol, index, "close")),
                     "receivables": money(sum((amount for _, amount in ledger.receivables), ZERO)),
-                    "weight": float(ledger.shares * rows[symbol][index]["close"] / nav),
+                    "weight": float(held_value(symbol, index, "close") / nav),
                     "risk_group": "us_equity",
                 }
                 for symbol, ledger in ledgers.items()

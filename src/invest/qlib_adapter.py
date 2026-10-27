@@ -7,6 +7,7 @@ import threading
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from datetime import date
 from importlib.metadata import version
 from pathlib import Path
 from typing import cast
@@ -219,21 +220,34 @@ def calculate_factors(
     snapshot: DataSnapshot,
     expressions: Mapping[str, str],
     cache_root: Path = Path("data/cache"),
+    *,
+    start: date | None = None,
+    end: date | None = None,
 ) -> FactorFrame:
     if not expressions or any(not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in expressions):
         raise ValueError("At least one named factor expression is required")
     lookbacks = {name: expression_lookback(expr) for name, expr in expressions.items()}
     snapshot = load_snapshot(snapshot.directory, expected_id=snapshot.snapshot_id)
+    dates = snapshot.calendar["date"].to_pylist()
+    start, end = start or dates[0], end or dates[-1]
+    if start not in dates or end not in dates or start > end:
+        raise ValueError("Factor range must use ordered snapshot sessions")
     cache = build_qlib_cache(snapshot, cache_root)
     with _session(cache):
         from qlib.data import D
 
         frame = cast(
-            pd.DataFrame, D.features(D.instruments("all"), list(expressions.values()), freq="day")
+            pd.DataFrame,
+            D.features(
+                D.instruments("all"),
+                list(expressions.values()),
+                start_time=start.isoformat(),
+                end_time=end.isoformat(),
+                freq="day",
+            ),
         )
         frame.columns = list(expressions)
         frame = frame.copy()
-    dates = snapshot.calendar["date"].to_pylist()
     indices = {day: index for index, day in enumerate(dates)}
     bars = {(r["date"], r["instrument"]): r for r in snapshot.bars.to_pylist()}
     members = snapshot.universe.to_pylist()
@@ -245,9 +259,11 @@ def calculate_factors(
             r for r in members if r["instrument"] == instrument and r["start"] <= day <= r["end"]
         )
         for name, expression in expressions.items():
-            start, end = indices[day] - lookbacks[name], indices[day]
-            inputs = [bars.get((d, instrument)) for d in dates[max(0, start) : end + 1]]
-            complete = start >= 0 and all(r is not None for r in inputs)
+            first_index, last_index = indices[day] - lookbacks[name], indices[day]
+            inputs = [
+                bars.get((d, instrument)) for d in dates[max(0, first_index) : last_index + 1]
+            ]
+            complete = first_index >= 0 and all(r is not None for r in inputs)
             times = [
                 membership["available_at"],
                 *[r["available_at"] if r else None for r in inputs],

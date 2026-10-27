@@ -164,7 +164,7 @@ class SignalFrame:
                 or row["horizon"] < 1
                 or row["direction"] not in {0, 1}
                 or not row["pool_id"]
-                or row["available_at"].date() != row["date"]
+                or row["available_at"].date() < row["date"]
                 or row["expires_at"] <= row["available_at"]
                 or (row["date"], row["rank"]) in ranks
             ):
