@@ -66,6 +66,10 @@ SPY 及 SPY/QQQ 合并关注列表使用 `invest funnel-capture` 和 `invest fun
 不高于一半本金时清仓终止；分红按 10% 协定税率预扣，价差不扣美国税。旧规则和已冻结结果保持不变，
 详见[本金阶梯风控与 W-8BEN 税后口径](docs/research/principal-risk-and-tax.md)。
 
+第 1 步长历史复核（2020-07 至 2025-06，本金阶梯与 10% 分红预扣）中，两个冻结的周度选股候选在两档成本、
+四个平移起点下均未跑赢 QQQ，选股本身也低于同池随机抽样中位数；已按预登记门槛停止该个股方案，
+见[第 1 步结果](docs/research/step1-principal-ladder-results.md)。
+
 ## 保留历史与兼容入口
 
 旧 M1、M2/R1 研究从默认主入口移到 `invest legacy …`，例如：
