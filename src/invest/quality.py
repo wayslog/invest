@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import exchange_calendars as xcals
 import pyarrow as pa
 import pyarrow.parquet as pq
+from exchange_calendars.exchange_calendar import ExchangeCalendar
 
 from invest.market import read_bars
 
@@ -32,15 +33,19 @@ QUALITY_SCHEMA = pa.schema(
 )
 
 
+@lru_cache(maxsize=128)
+def _xnys_calendar(first_year: int, last_year: int) -> ExchangeCalendar:
+    """按完整年份复用日历，避免每次持仓年龄或冷却检查都重建节假日规则。"""
+    return xcals.get_calendar("XNYS", start=date(first_year, 1, 1), end=date(last_year, 12, 31))
+
+
 @lru_cache(maxsize=4096)
 def regular_sessions(start: date, end: date) -> pa.Table:
     """Return XNYS regular sessions with UTC opens/closes, including half days."""
     if start > end:
         raise ValueError("start must be on or before end")
     # Padding permits an empty requested interval made entirely of holidays.
-    calendar = xcals.get_calendar(
-        "XNYS", start=start - timedelta(days=7), end=end + timedelta(days=7)
-    )
+    calendar = _xnys_calendar((start - timedelta(days=7)).year, (end + timedelta(days=7)).year)
     rows = []
     for session in calendar.sessions_in_range(start, end):
         opening = calendar.session_open(session).to_pydatetime()

@@ -94,6 +94,23 @@ def test_capture_is_reproducible_and_carries_conservative_availability(tmp_path:
     assert main(["verify-data", "--dataset", str(directory)]) == 0
 
 
+@pytest.mark.parametrize("ex_date,admitted", [("2023-12-29", True), ("2024-01-05", False)])
+def test_spinoff_before_empty_inception_is_retained_but_in_range_is_rejected(
+    tmp_path: Path, ex_date: str, admitted: bool
+) -> None:
+    events: dict[str, list[dict[str, object]]] = {
+        "spin_offs": [{"source_symbol": "DEMO", "new_symbol": "CHILD", "ex_date": ex_date}]
+    }
+    dataset = fetch_dataset(SPEC, tmp_path / "datasets", provider(actions=events))
+    raw = pq.read_table(dataset / "raw.parquet")
+    assert any(ex_date.encode() in r["body"] for r in raw.to_pylist() if r["kind"] == "actions")
+    if admitted:
+        assert verify_dataset(dataset).num_rows == 6
+    else:
+        with pytest.raises(ValueError):
+            verify_dataset(dataset)
+
+
 @pytest.mark.parametrize(
     "problem",
     [

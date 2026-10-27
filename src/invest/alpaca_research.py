@@ -93,6 +93,11 @@ def _validated_inputs(evidence: Path) -> tuple[pa.Table, dict[str, Any], pa.Tabl
     audit = audit_dividends(dataset, evidence / "issuer.parquet")
     if audit.errors:
         raise ValueError("Issuer dividends disagree with Alpaca cash events")
+    audit_path = evidence / "dividend-audit.parquet"
+    if audit_path.exists() and not audit.checks.equals(
+        pq.read_table(audit_path), check_metadata=True
+    ):
+        raise ValueError("Frozen issuer dividend audit changed")
     reference = _split_reference(evidence / "split-reference.parquet", manifest["symbol"])
     if set(reference) != set(bars["date"].to_pylist()):
         raise ValueError("Split reference must cover every raw session")
@@ -196,6 +201,11 @@ def import_alpaca_research(
             bars, manifest, coverage = _validated_inputs(evidence)
             if manifest["symbol"] != symbol:
                 raise ValueError("Alpaca dataset symbol differs from its declared instrument")
+            pq.write_table(
+                audit_dividends(evidence / "dataset", evidence / "issuer.parquet").checks,
+                evidence / "dividend-audit.parquet",
+                compression="zstd",
+            )
             pq.write_table(coverage, evidence / "coverage.parquet", compression="zstd")
             seal_artifacts(evidence)
             metadata = {

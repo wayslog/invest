@@ -39,6 +39,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name, help_text in (
         ("mine", "Mine factors and freeze research signals"),
         ("backtest", "Backtest a frozen pool with shared cash and independent audit"),
+        ("trend-backtest", "Study a registered trend hypothesis with costs and empty cash actions"),
+        ("weekly-backtest", "Replay historical weekly membership and compare dropout policies"),
         ("decide", "Generate read-only stock rankings and action recommendations"),
     ):
         command = commands.add_parser(name, help=help_text)
@@ -51,7 +53,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 required=True,
                 help="Explicit XNYS decision session date",
             )
-    for name in ("verify-backtest", "verify-decision"):
+    for name in (
+        "verify-backtest",
+        "verify-decision",
+        "verify-trend-backtest",
+        "verify-weekly-backtest",
+    ):
         command = commands.add_parser(name, help="Verify and replay a frozen research result")
         command.add_argument("--study", type=Path, required=True)
     commands.add_parser("legacy", help="Explicit legacy research and account compatibility")
@@ -61,11 +68,41 @@ def main(argv: Sequence[str] | None = None) -> int:
     imported.add_argument("--split-reference", type=Path, required=True)
     imported.add_argument("--output", type=Path, required=True)
     imported.add_argument("--allow-exploratory", action="store_true")
+    capture = commands.add_parser(
+        "funnel-capture", help="Capture fund holdings and historical research prices"
+    )
+    capture.add_argument("--as-of", type=date.fromisoformat, required=True)
+    capture.add_argument("--output", type=Path, required=True)
+    capture.add_argument("--credentials-env", type=Path)
+    capture.add_argument(
+        "--holdings-sources", type=Path, help="Frozen official SPY and QQQ responses"
+    )
+    funnel = commands.add_parser("funnel", help="Run the research watchlist funnel")
+    funnel.add_argument("--inputs", type=Path, required=True)
+    funnel.add_argument("--config", type=Path, default=Path("configs/spy-funnel.toml"))
+    funnel.add_argument("--as-of", type=date.fromisoformat, required=True)
+    funnel.add_argument("--output", type=Path, required=True)
+    funnel.add_argument("--previous", type=Path)
     args = parser.parse_args(values)
     exit_code = 0
     try:
         with redirect_stdout(sys.stderr):
-            if args.command == "import-alpaca":
+            if args.command == "funnel-capture":
+                from invest.spy_data import capture_spy_inputs, market_request
+
+                output = capture_spy_inputs(
+                    args.output,
+                    args.as_of,
+                    market_request(args.credentials_env),
+                    holdings_sources=args.holdings_sources,
+                )
+            elif args.command == "funnel":
+                from invest.stock_funnel import run_funnel
+
+                output = run_funnel(
+                    args.inputs, args.config, args.output, args.as_of, previous=args.previous
+                )
+            elif args.command == "import-alpaca":
                 from invest.alpaca_research import import_alpaca_research
 
                 datasets = {}
@@ -96,6 +133,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 from invest.backtest_study import run_backtest
 
                 output = asdict(run_backtest(args.config, args.output))
+            elif args.command == "trend-backtest":
+                from invest.trend_study import run_trend_study
+
+                output = run_trend_study(args.config, args.output)
+            elif args.command == "weekly-backtest":
+                from invest.weekly_study import run_weekly_study
+
+                output = run_weekly_study(args.config, args.output)
+                exit_code = 0 if output["status"] == "completed" else 1
+            elif args.command == "verify-weekly-backtest":
+                from invest.weekly_study import verify_weekly_study
+
+                output = verify_weekly_study(args.study)
+            elif args.command == "verify-trend-backtest":
+                from invest.trend_study import verify_trend_study
+
+                output = verify_trend_study(args.study)
             elif args.command == "decide":
                 from invest.decision_study import run_decision
 

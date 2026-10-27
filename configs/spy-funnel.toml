@@ -1,0 +1,17 @@
+# 固定的研究关注评分，不代表收益概率或经回测验证的买入信号。
+stage_one_size = 50
+focus_size = 5
+min_price = 10.0
+min_dollar_volume = 20000000.0
+min_score = 70.0
+max_volatility = 0.60
+max_drawdown = 0.30
+max_correlation = 0.85
+
+[weights]
+momentum_126 = 0.25
+momentum_252 = 0.20
+trend = 0.15
+volatility = 0.15
+drawdown = 0.15
+liquidity = 0.10

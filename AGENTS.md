@@ -41,6 +41,36 @@
   do not substitute or merge it into IBKR records or broker execution. Freeze raw
   captures and validation evidence with research results. Preserve all legacy
   provenance, registrations, journals and out-of-sample status.
+- The SPY or SPY/QQQ funnel is a preliminary price-based research watchlist. It may
+  retain unverified dividend, corporate-action, valuation and earnings-event
+  coverage as explicit limitations. Its FOCUS/WATCH rows must remain
+  trade_eligible=false and must not replace a validated factor pool, backtest
+  execution inputs or broker actions. Keep full trading admission unchanged.
+- Full stock-selection backtests use the weekly union of contemporaneously known
+  SPY and QQQ holdings. Never substitute current constituents for historical ones.
+  Evaluate weekly candidates together with existing holdings, pending orders and
+  corporate-action entitlements in one continuous account. Preserve capital,
+  costs, settlement, cooldown and risk state across weeks and validation windows.
+  Delistings, trading halts, splits, mergers and spinoffs require explicit event
+  treatment; missing evidence must not become a fabricated fill or a silently
+  removed security. Historical walk-forward replay of already inspected data
+  remains known-history research. See docs/research/weekly-dynamic-backtest.md.
+- The weekly rank-rotation versus hold-until-exit comparison uses free data only.
+  Keep the two policies explicit and all other inputs and costs identical. A
+  ranking dropout is distinct from an independent technical or risk exit. Do not
+  substitute current membership or an index proxy to hide missing ETF history.
+- The user explicitly changed the 2026-10-26 experiment to the current fixed
+  513-stock universe. Freeze that exact list and rerun the weekly funnel inside
+  it; do not require historical ETF membership for this experiment. Label it as
+  current-universe, known-history research with survivorship bias, not the
+  historical-membership backtest above. Preserve original membership dates,
+  provider provenance and all earlier research records.
+- QQQ buy-and-hold is the primary benchmark for the fixed-universe experiment.
+  Report after-cost excess return against QQQ explicitly; lower drawdown alone
+  does not satisfy the user's return objective. Compare frozen initial holdings,
+  entry/exit-only management and prespecified rebalance frequencies without
+  changing the screening thresholds after inspecting the results. Preserve all
+  attempted configurations and label comparisons on inspected history accordingly.
 - Paper fills must follow the decision session. Preserve Decimal accounting,
   append-only history and restart idempotency. Keep synthetic and real data explicit.
 - Account snapshots are tied to engine source and parameters. After changing engine

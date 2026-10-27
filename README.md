@@ -41,6 +41,27 @@ IBKR 历史采集导入、企业行动回执和观察状态只读导出见
 [P5 历史研究闭环](docs/research/p5-alpaca-pipeline.md)。无因子通过筛选时保留拒绝结果，
 生成现金回测和 WAIT 建议，不强行挑选因子或修改原研究门槛。
 
+SPY 及 SPY/QQQ 合并关注列表使用 `invest funnel-capture` 和 `invest funnel`：官方成分股先经
+流动性、趋势与相对强度初筛，再按固定的 0–100 分与风险、相关性规则聚焦最多五只。
+逐股给出分项得分、理由及周际变化；关注名单保持非交易资格，详见
+[每周两轮选股漏斗](docs/research/weekly-spy-funnel.md)。
+
+少量已选股票可用 `invest trend-backtest` 检验预先登记的趋势规则，输出含成本回测与
+独立空仓的模拟动作；`invest verify-trend-backtest` 重放全部结果。该研究不生成合格因子池，
+选股后历史不当作样本外证据。详见[选中股票的含成本趋势研究](docs/research/selected-stock-cost-backtest.md)。
+
+完整动态选股回测须逐周重建当时的 SPY/QQQ 成员，并将候选与现有持仓放入连续账户计算，
+处理退市和公司行动，再按时间滚动验证。`invest weekly-backtest` 已接入历史成员准入、
+逐周漏斗和两种落选策略的连续账户；`invest verify-weekly-backtest` 可重放冻结结果。
+真实区间仍缺完整历史名单，稀疏交易历史、复杂公司行动和退市处置仍待实现；
+当前仅完成合成行为验证，详见[周度动态回测规范](docs/research/weekly-dynamic-backtest.md)。
+
+用户指定的固定当前 513 只股票实验已另行完成真实历史回放：股票池固定，每周仍重跑漏斗，
+比较落选退出与持有至独立退出。该实验含当前名单的幸存者偏差，采用探索性数据口径，
+不代表历史 ETF 成分回测或正式交易准入，见[固定当前股票池实验](docs/research/fixed-current-universe-backtest.md)。
+扩展对照以 QQQ 买入持有为主基准，覆盖首期名单不调仓、仅进出场，以及 A/B 的每周、双周、
+每月和每季度调仓；全部报告扣成本后的 QQQ 超额收益，不用较低回撤替代收益达标。
+
 ## 保留历史与兼容入口
 
 旧 M1、M2/R1 研究从默认主入口移到 `invest legacy …`，例如：

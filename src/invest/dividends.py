@@ -124,6 +124,11 @@ def issuer_dividends(
 
 def audit_dividends(dataset: Path, source: Path) -> QualityReport:
     """Compare the full event set, amounts and pay dates without rewriting the dataset."""
+    from invest.stock_dividends import SOURCE_SCHEMA as STOCK_SOURCE_SCHEMA
+    from invest.stock_dividends import audit_stock_dividends
+
+    if pq.read_schema(source).equals(STOCK_SOURCE_SCHEMA, check_metadata=True):
+        return audit_stock_dividends(dataset, source)
     bars = verify_dataset(dataset)
     manifest = pq.read_table(dataset / "manifest.parquet").to_pylist()[0]
     capture = pq.read_table(source)

@@ -42,6 +42,7 @@ from invest.legacy_strategies import (
 from invest.quality import regular_sessions
 from invest.research_data import identity
 from invest.risk import exit_levels, risk_status
+from invest.weekly_selection import WeeklySelection
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,12 @@ class Policy:
 
 
 def decide(
-    signals: SignalFrame, account: AccountSnapshot, state: StrategyState, policy: Policy
+    signals: SignalFrame,
+    account: AccountSnapshot,
+    state: StrategyState,
+    policy: Policy,
+    *,
+    selection: WeeklySelection | None = None,
 ) -> DecisionPlan:
     """以实际收盘截点生成下一会话动作；只返回新状态，不改动输入账户。"""
     metadata = signals.table.schema.metadata or {}
@@ -151,6 +157,10 @@ def decide(
     ):
         raise ValueError("Invalid persistent strategy risk state")
     closing, following = calendar[0]["close_at"], calendar[1]
+    if selection is not None:
+        if not closing <= selection.decision_at < following["open_at"]:
+            raise ValueError("Weekly decision must follow its price close and precede execution")
+        closing = selection.decision_at
     quotes = {q.instrument: q for q in account.quotes}
     holdings = {h.instrument: h for h in account.holdings}
     pending = {order.instrument: order for order in account.pending}
@@ -182,7 +192,7 @@ def decide(
     peak = state.peak_equity if nav is None else max(state.peak_equity, nav)
     status = (
         state.risk_status
-        if nav is None
+        if nav is None or (selection is not None and not selection.enforce_account_risk)
         else risk_status(
             state.risk_status, nav, peak, account.initial_cash, policy.account_drawdown
         )
@@ -193,6 +203,8 @@ def decide(
         or regular_sessions(state.last_rebalance, account.as_of).num_rows - 1
         >= policy.rebalance_sessions
     )
+    if selection is not None:
+        scheduled = selection.rebalance
     blocked = {}
     for instrument, exited in state.last_exits:
         if exited > account.as_of:
@@ -238,6 +250,13 @@ def decide(
                 or values[instrument]["score"] <= policy.min_score
             ):
                 reason = "signal_exit"
+        if (
+            not reason
+            and selection is not None
+            and selection.mode == "rank_rotation"
+            and instrument not in selection.candidates
+        ):
+            reason = "rank_exit"
         if reason:
             exits[instrument] = reason
             updated_positions[-1] = replace(updated_positions[-1], exit_reason=reason)
@@ -255,6 +274,20 @@ def decide(
         else set()
     )
     ranked = sorted(eligible_buys, key=lambda key: (values[key]["rank"], key))[: policy.top_k]
+    entry_blocks: dict[str, str] = {}
+    retained: set[str] = set()
+    if selection is not None:
+        eligible_buys &= set(selection.candidates)
+        ranked, entry_blocks = selection.targets(
+            eligible_buys,
+            set(holdings),
+            set(exits),
+            {key for key, order in pending.items() if order.side == "buy"},
+            policy.top_k,
+        )
+        retained = set(holdings) - set(selection.candidates) - set(exits)
+        # 当周未完成的入场在名额、交收和冷却允许后继续评估，不重置账户或等待新一周。
+        scheduled = scheduled or (selection.allow_entries and bool(set(ranked) - set(holdings)))
     weight = min(policy.position_cap, policy.allocation / len(ranked)) if ranked else Decimal(0)
     reserve = sum(
         (
@@ -279,6 +312,20 @@ def decide(
             desired, reason = current, "unpriced_position"
         elif not scheduled:
             desired, reason = current, "not_scheduled"
+        if selection is not None and not unpriced:
+            if current and not selection.resize_existing:
+                desired, reason = current, "scheduled_resize_disabled"
+            elif not current and not selection.allow_entries:
+                desired, reason = 0, "entry_window_closed"
+        if not unpriced:
+            if instrument in entry_blocks and not current:
+                reason = entry_blocks[instrument]
+            if (
+                selection is not None
+                and selection.mode == "hold_until_exit"
+                and instrument in retained
+            ):
+                desired, reason = current, "retained_until_exit"
         if instrument in exits:
             desired, reason = 0, exits[instrument]
         elif instrument in blocked:
@@ -304,6 +351,7 @@ def decide(
             and quote.available
             and account.operations == "active"
             and instrument not in exits
+            and (selection is None or selection.enforce_exposure)
         ):
             market = nav - account.cash - account.receivables
             cap = min(
@@ -483,6 +531,11 @@ def decide(
         # 对最终保存的动作语义生成身份，包含取消需求、退出原因和有效期；等值 Decimal 同编码。
         row["action_id"] = identity(
             {
+                **(
+                    {"selection_id": selection.selection_id, "mode": selection.mode}
+                    if selection is not None
+                    else {}
+                ),
                 "account": account.account_id,
                 "snapshot": account.snapshot_id,
                 "source": account.source,
@@ -509,6 +562,7 @@ def decide(
                     b"signal_price_basis": metadata[b"price_basis"],
                     b"evidence_status": b"research_only",
                     b"policy_id": policy.policy_id.encode(),
+                    **({b"selection_mode": selection.mode.encode()} if selection else {}),
                 }
             ),
         ),
