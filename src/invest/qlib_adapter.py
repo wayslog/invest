@@ -23,6 +23,9 @@ from invest.research_data import digest, identity, load_snapshot
 FIELDS = ("open", "high", "low", "close", "volume")
 CONVERTER_VERSION = "invest_qlib_cache_v1"
 _LOCK = threading.RLock()
+_ROLLING = frozenset(
+    ("Mean", "Std", "Sum", "Max", "Min", "Rank", "Slope", "Rsquare", "Resi", "IdxMax", "IdxMin")
+)
 
 
 @contextmanager
@@ -143,8 +146,17 @@ def build_qlib_cache(snapshot: DataSnapshot, cache_root: Path = Path("data/cache
     return directory
 
 
+def _window(node: ast.AST) -> int:
+    if isinstance(node, ast.Constant) and type(node.value) is int and 1 <= node.value <= 2520:
+        return node.value
+    raise ValueError("Only declared causal factor fields and operators are allowed")
+
+
 def expression_lookback(expression: str) -> int:
-    """首版只接收有限的因果算子；未来 Ref、任意代码和未声明字段直接拒绝。"""
+    """只接收回看历史的白名单算子；未来 Ref、任意代码和未声明字段直接拒绝。
+
+    返回所需的此前会话数：Ref(x,N) 回看 N，N 会话滚动窗口回看 N-1。
+    """
     if len(expression) > 4096:
         raise ValueError("Factor expression is too long")
     try:
@@ -168,24 +180,36 @@ def expression_lookback(expression: str) -> int:
             node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)
         ):
             return max(visit(node.left), visit(node.right))
+        # 单一比较得到 0/1 序列，如 Mean($close>Ref($close,1),N) 为 N 会话上涨占比。
+        if (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.Gt, ast.GtE, ast.Lt, ast.LtE))
+        ):
+            return max(visit(node.left), visit(node.comparators[0]))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
-            name = node.func.id
-            if name in {"Abs", "Log", "Sign"} and len(node.args) == 1:
-                return visit(node.args[0])
-            count = 3 if name in {"Corr", "Cov"} else 2
-            if (
-                name in {"Ref", "Mean", "Std", "Sum", "Max", "Min", "Rank", "Corr", "Cov"}
-                and len(node.args) == count
-            ):
-                window = node.args[-1]
+            name, args = node.func.id, node.args
+            if name in {"Abs", "Log", "Sign"} and len(args) == 1:
+                return visit(args[0])
+            # Greater、Less 为逐会话的两序列较大、较小值，不是滚动算子。
+            if name in {"Greater", "Less"} and len(args) == 2:
+                return max(visit(args[0]), visit(args[1]))
+            if name == "Ref" and len(args) == 2:
+                return visit(args[0]) + _window(args[1])
+            if name in {"Corr", "Cov"} and len(args) == 3:
+                return max(visit(args[0]), visit(args[1])) + _window(args[2]) - 1
+            if name == "Quantile" and len(args) == 3:
+                level = args[2]
                 if (
-                    isinstance(window, ast.Constant)
-                    and type(window.value) is int
-                    and 1 <= window.value <= 2520
+                    isinstance(level, ast.Constant)
+                    and isinstance(level.value, (int, float))
+                    and not isinstance(level.value, bool)
+                    and 0 <= level.value <= 1
                 ):
-                    return (
-                        max(visit(arg) for arg in node.args[:-1]) + window.value - (name != "Ref")
-                    )
+                    return visit(args[0]) + _window(args[1]) - 1
+            # Rank 为本证券窗口内的时序分位；IdxMax/IdxMin 为窗口内极值位置（1 为最早）。
+            if name in _ROLLING and len(args) == 2:
+                return visit(args[0]) + _window(args[1]) - 1
         raise ValueError("Only declared causal factor fields and operators are allowed")
 
     return visit(tree.body)

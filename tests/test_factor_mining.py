@@ -116,6 +116,67 @@ seed = 19
     assert [candidate.trial_id for candidate in candidates] == list(range(4))
 
 
+def test_alpha158_family_uses_qlib_library_without_vwap(tmp_path: Path) -> None:
+    from qlib.contrib.data.loader import Alpha158DL
+
+    from invest.factor_mining import alpha158_expressions, generate_candidates
+    from invest.mining_config import load_mining_config
+    from invest.qlib_adapter import expression_lookback
+
+    expressions = alpha158_expressions((10, 5))
+    # 9 个 K 线形态、OPEN0/HIGH0/LOW0，加 29 类滚动算子乘 2 个窗口；只排除 VWAP0。
+    assert len(expressions) == 9 + 3 + 29 * 2 == len(set(expressions))
+    assert not any("$vwap" in expression for expression in expressions)
+    full, names = Alpha158DL.get_feature_config()
+    library = dict(zip(names, full, strict=True))
+    assert set(expressions) <= set(library.values())
+    assert {library[n] for n in ("KMID", "QTLU5", "RSQR10", "IMXD5", "CNTD10", "VSUMD5")} <= set(
+        expressions
+    )
+    assert all(expression_lookback(expression) <= 10 for expression in expressions)
+
+    path = tmp_path / "mine.toml"
+    path.write_text(
+        """snapshot = "snapshot"
+train_start = 2022-01-03
+train_end = 2022-04-29
+validation_start = 2022-05-02
+validation_end = 2022-06-30
+test_start = 2022-07-01
+test_end = 2022-07-29
+known_through = 2022-06-30
+families = ["momentum", "alpha158"]
+windows = [5, 10]
+candidate_budget = 72
+seed = 19
+"""
+    )
+    config = load_mining_config(path)
+    candidates = generate_candidates(config)
+    assert candidates == generate_candidates(config)
+    assert len(candidates) == 72 and len({c.factor for c in candidates}) == 72
+    assert {c.family for c in candidates} == {"momentum", "alpha158"}
+    assert all(c.depth <= config.max_depth and c.nodes <= config.max_nodes for c in candidates)
+
+
+def test_default_families_stay_on_templates(tmp_path: Path) -> None:
+    from invest.mining_config import TEMPLATE_FAMILIES, load_mining_config
+
+    path = tmp_path / "mine.toml"
+    path.write_text(
+        """snapshot = "snapshot"
+train_start = 2022-01-03
+train_end = 2022-04-29
+validation_start = 2022-05-02
+validation_end = 2022-06-30
+test_start = 2022-07-01
+test_end = 2022-07-29
+known_through = 2022-06-30
+"""
+    )
+    assert load_mining_config(path).families == TEMPLATE_FAMILIES
+
+
 def test_segment_labels_are_purged_at_the_training_boundary(tmp_path: Path) -> None:
     from invest.factor_mining import purge_segment
 
@@ -258,6 +319,30 @@ def test_mining_records_every_trial_and_freezes_a_nonredundant_pool(tmp_path: Pa
     assert saved["holdout_status"] == "reserved_unassessed" and not saved["account_eligible"]
     with pytest.raises(FileExistsError):
         run_mining(config, result.directory, cache_root=tmp_path / "cache")
+
+
+def test_alpha158_candidates_pass_through_mining_gates(tmp_path: Path) -> None:
+    from invest.factor_mining import run_mining
+    from invest.signals import generate_signals, load_factor_pool
+
+    data = research_snapshot(tmp_path)
+    config = mining_config(tmp_path, data)
+    config.write_text(
+        config.read_text()
+        .replace('families = ["momentum", "reversal"]', 'families = ["alpha158"]')
+        .replace("candidate_budget = 6", "candidate_budget = 12")
+        .replace("windows = [2, 4, 8]", "windows = [5]")
+    )
+    result = run_mining(config, tmp_path / "study", cache_root=tmp_path / "cache")
+    trials = pq.read_table(result.directory / "trials.parquet").to_pylist()
+    assert result.candidates == 12 and len(trials) == 12
+    assert {row["family"] for row in trials} == {"alpha158"}
+    assert all(row["status"] in {"selected", "rejected"} and row["reason"] for row in trials)
+    assert sum(row["status"] == "selected" for row in trials) == result.selected
+    if result.selected:
+        pool = load_factor_pool(result.directory / "factor_pool.parquet")
+        day = data.calendar["date"][119].as_py()
+        assert generate_signals(pool, data, day).table.num_rows > 0
 
 
 def test_single_available_factor_value_does_not_restore_missing_signals(tmp_path: Path) -> None:

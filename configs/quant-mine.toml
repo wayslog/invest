@@ -8,6 +8,8 @@ test_start = 2022-11-01
 test_end = 2022-12-30
 known_through = 2022-10-31
 
+# 可加入 "alpha158"：Qlib Alpha158 价量因子库（不含 VWAP0），滚动窗口同样取自 windows，
+# 3 个窗口共 99 个候选。加入后应提高 candidate_budget，多重检验门槛随之变严。
 families = ["momentum", "reversal", "volatility", "volume_trend", "range_position", "price_volume"]
 windows = [5, 10, 20]
 candidate_budget = 18

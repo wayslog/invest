@@ -164,6 +164,24 @@ class Candidate:
     nodes: int
 
 
+def alpha158_expressions(windows: tuple[int, ...]) -> list[str]:
+    """Qlib Alpha158 定义：K 线形态、当日开高低相对收盘及滚动价量统计。
+
+    价格均为快照口径的同一价格基准；比值无单位，成交量相关项沿用快照成交量单位。
+    快照不含 VWAP，因此不生成 VWAP0；顺序随 Qlib 版本固定，版本已登记。
+    """
+    from qlib.contrib.data.loader import Alpha158DL
+
+    fields, _ = Alpha158DL.get_feature_config(
+        {
+            "kbar": {},
+            "price": {"windows": [0], "feature": ["OPEN", "HIGH", "LOW"]},
+            "rolling": {"windows": sorted(windows)},
+        }
+    )
+    return list(fields)
+
+
 def generate_candidates(config: MiningConfig) -> list[Candidate]:
     templates = {
         "momentum": "$close/Ref($close,{w})-1",
@@ -173,11 +191,16 @@ def generate_candidates(config: MiningConfig) -> list[Candidate]:
         "range_position": "($close-Min($low,{w}))/(Max($high,{w})-Min($low,{w}))",
         "price_volume": "Corr($close/Ref($close,1)-1,$volume/Mean($volume,{w}),{w})",
     }
-    choices = [
-        (family, templates[family].format(w=window))
-        for family in config.families
-        for window in sorted(config.windows)
-    ]
+    choices = []
+    for family in config.families:
+        expressions = (
+            alpha158_expressions(config.windows)
+            if family == "alpha158"
+            else [templates[family].format(w=window) for window in sorted(config.windows)]
+        )
+        choices += [(family, expression) for expression in expressions]
+    if len({expression for _, expression in choices}) != len(choices):
+        raise ValueError("Candidate expressions must be unique")
     random.Random(config.seed).shuffle(choices)
 
     def depth(node: ast.AST) -> int:

@@ -10,7 +10,16 @@ from pathlib import Path
 from invest.backtest_config import parse_policy
 from invest.strategies import Policy
 
-FAMILIES = ("momentum", "reversal", "volatility", "volume_trend", "range_position", "price_volume")
+# alpha158 为 Qlib Alpha158 价量因子库（不含 VWAP），滚动窗口同样取自 windows；默认不启用。
+TEMPLATE_FAMILIES = (
+    "momentum",
+    "reversal",
+    "volatility",
+    "volume_trend",
+    "range_position",
+    "price_volume",
+)
+FAMILIES = (*TEMPLATE_FAMILIES, "alpha158")
 
 
 @dataclass(frozen=True)
@@ -49,7 +58,7 @@ class MiningConfig:
     test_start: date
     test_end: date
     known_through: date
-    families: tuple[str, ...] = FAMILIES
+    families: tuple[str, ...] = TEMPLATE_FAMILIES
     windows: tuple[int, ...] = (5, 10, 20)
     candidate_budget: int = 16
     seed: int = 0
