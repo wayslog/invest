@@ -7,7 +7,7 @@ import pyarrow as pa
 
 from invest.contracts import AccountSnapshot, DecisionPlan, SignalFrame, StrategyState
 from invest.research_data import identity
-from invest.risk import exit_levels
+from invest.risk import exit_levels, liquidates
 from invest.strategies import Policy, decide
 from invest.weekly_selection import WeeklySelection
 
@@ -164,13 +164,13 @@ def cash_sweep_plan(
     )
     unpriced = any(not quotes[h.instrument].available for h in account.holdings)
     quantity, side, reason = 0, "HOLD" if shares else "WAIT", "cash_sweep_idle"
+    # 本金警戒不卖出承接 ETF；个股退出腾出的已交收现金继续转入 ETF。
+    liquidating = liquidates(plan.state.risk_status, policy.account_risk)
     if account.operations == "active" and not unpriced:
-        if shares and (plan.state.risk_status != "active" or not quote.active):
+        if shares and (liquidating or not quote.active):
             quantity, side = shares, "SELL"
-            reason = (
-                plan.state.risk_status if plan.state.risk_status != "active" else "universe_exit"
-            )
-        elif plan.state.risk_status == "active" and quote.active:
+            reason = plan.state.risk_status if liquidating else "universe_exit"
+        elif not liquidating and quote.active:
             if stock_buys > account.cash and shares:
                 price = quote.close * (1 - policy.slippage_bps / 10000)
                 needed = (stock_buys - account.cash + policy.commission) / price

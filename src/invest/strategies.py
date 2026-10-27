@@ -41,7 +41,7 @@ from invest.legacy_strategies import (
 )
 from invest.quality import regular_sessions
 from invest.research_data import identity
-from invest.risk import exit_levels, risk_status
+from invest.risk import exit_levels, liquidates, principal_status, risk_status
 from invest.weekly_selection import WeeklySelection
 
 
@@ -64,8 +64,13 @@ class Policy:
     exit_mode: str = "close"
     sale_proceeds: str = "same_session"
     participation: Decimal = Decimal(1)
+    # peak_drawdown 为原规则（回撤锁定与 80%/50% 本金线，非正常状态均清仓）；
+    # principal_ladder 不使用 account_drawdown，见 risk.principal_status。
+    account_risk: str = "peak_drawdown"
 
     def __post_init__(self) -> None:
+        if self.account_risk not in {"peak_drawdown", "principal_ladder"}:
+            raise ValueError("Unsupported account risk policy")
         if type(self.allow_exploratory) is not bool:
             raise ValueError("allow_exploratory must be boolean")
         if (
@@ -113,10 +118,12 @@ class Policy:
 
     @property
     def policy_id(self) -> str:
+        # 新增字段取默认值时不进入身份，已冻结策略的 policy_id 与动作身份保持不变。
         return identity(
             {
                 key: str(value.normalize()) if isinstance(value, Decimal) else value
                 for key, value in asdict(self).items()
+                if not (key == "account_risk" and value == "peak_drawdown")
             }
         )
 
@@ -193,10 +200,15 @@ def decide(
     status = (
         state.risk_status
         if nav is None or (selection is not None and not selection.enforce_account_risk)
+        else principal_status(state.risk_status, nav, account.initial_cash)
+        if policy.account_risk == "principal_ladder"
         else risk_status(
             state.risk_status, nav, peak, account.initial_cash, policy.account_drawdown
         )
     )
+    liquidating = liquidates(status, policy.account_risk)
+    # 本金警戒：保留现有个股及其独立退出，不新开、不加仓；只允许降低风险的减仓。
+    hold_only = status != "active" and not liquidating
     scheduled = (
         state.last_rebalance is None
         or state.last_rebalance == account.as_of
@@ -230,7 +242,7 @@ def decide(
         )
         levels[instrument] = stop, profit, stop_reason
         reason = anchor.exit_reason
-        if status != "active":
+        if liquidating:
             reason = status
         elif not quote.active:
             reason = "universe_exit"
@@ -343,6 +355,8 @@ def decide(
             )
         elif status != "active" and not current:
             desired, reason = 0, status
+        elif hold_only and desired != current:
+            desired, reason = current, "principal_warning"
         # 仓位自然漂移按下一会话减仓处理，不声称盘中硬上限。
         if (
             current
@@ -518,7 +532,8 @@ def decide(
             "pool_id": metadata.get(b"pool_id", b"").decode(),
             "cancel_pending": instrument in pending
             and (
-                status != "active"
+                liquidating
+                or (hold_only and pending[instrument].side == "buy")
                 or instrument in exits
                 or account.operations != "active"
                 or (pending[instrument].side == "buy" and instrument not in eligible_buys)

@@ -15,6 +15,25 @@ def risk_status(
     return previous
 
 
+# 本金阶梯（用户 2026-10-27 决定）：净值低于本金进入警戒，停止新增个股风险；
+# 净值不高于本金一半为硬性底线，下一会话清仓并永久终止。高于本金的盈利部分不设回撤锁定。
+PRINCIPAL_FLOOR = Decimal("0.5")
+
+
+def principal_status(previous: str, equity: Decimal, principal: Decimal) -> str:
+    """按净值相对本金（累计净入金，USD）分级；警戒可随净值回到本金以上解除，终止不可恢复。"""
+    if previous not in {"active", "warning", "terminated"}:
+        raise ValueError("Principal ladder accounts cannot carry a peak-drawdown halt")
+    if previous == "terminated" or equity <= principal * PRINCIPAL_FLOOR:
+        return "terminated"
+    return "warning" if equity < principal else "active"
+
+
+def liquidates(status: str, account_risk: str) -> bool:
+    """本金阶梯的警戒只停止新增个股；其余非正常状态沿用清仓退出。"""
+    return status != "active" and not (account_risk == "principal_ladder" and status == "warning")
+
+
 def position_exit(
     economic_price: Decimal, entry: Decimal, peak: Decimal, stop: Decimal, trailing: Decimal
 ) -> str:

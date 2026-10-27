@@ -7,6 +7,7 @@ import pyarrow as pa
 
 from invest.market import MONEY
 from invest.portfolio_types import PortfolioResult
+from invest.risk import PRINCIPAL_FLOOR
 
 METRIC_SCHEMA = pa.schema(
     [
@@ -104,3 +105,50 @@ def yearly(result: PortfolioResult, market: PortfolioResult, initial: Decimal) -
         )
         previous, prior_market = rows[last]["equity"], benchmarks[last]["equity"]
     return pa.Table.from_pylist(output, schema=PERIOD_SCHEMA)
+
+
+PRINCIPAL_SCHEMA = pa.schema(
+    [
+        ("principal", MONEY),
+        ("hard_line", MONEY),
+        ("min_equity", MONEY),
+        ("min_equity_date", pa.date32()),
+        ("min_equity_ratio", pa.float64()),
+        ("final_equity_ratio", pa.float64()),
+        ("sessions_below_principal", pa.int64()),
+        ("share_below_principal", pa.float64()),
+        ("first_below_principal", pa.date32()),
+        ("hard_line_breached_on", pa.date32()),
+    ]
+)
+
+
+def principal_summary(equity: pa.Table, principal: Decimal) -> pa.Table:
+    """按收盘净值（USD）相对本金衡量路径；比例为净值除以本金，硬线为本金的一半。
+
+    本金是累计净入金。只看收盘估值：盘中更低价格和开盘跳空不在日线净值中体现。
+    """
+    if not principal.is_finite() or principal <= 0 or not equity.num_rows:
+        raise ValueError("Principal summary requires positive principal and equity rows")
+    rows = equity.select(["date", "equity"]).to_pylist()
+    hard_line = principal * PRINCIPAL_FLOOR
+    lowest = min(rows, key=lambda row: (row["equity"], row["date"]))
+    below = [row["date"] for row in rows if row["equity"] < principal]
+    breached = [row["date"] for row in rows if row["equity"] <= hard_line]
+    return pa.Table.from_pylist(
+        [
+            {
+                "principal": principal,
+                "hard_line": hard_line,
+                "min_equity": lowest["equity"],
+                "min_equity_date": lowest["date"],
+                "min_equity_ratio": float(lowest["equity"] / principal),
+                "final_equity_ratio": float(rows[-1]["equity"] / principal),
+                "sessions_below_principal": len(below),
+                "share_below_principal": len(below) / len(rows),
+                "first_below_principal": below[0] if below else None,
+                "hard_line_breached_on": breached[0] if breached else None,
+            }
+        ],
+        schema=PRINCIPAL_SCHEMA,
+    )

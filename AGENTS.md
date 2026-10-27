@@ -71,6 +71,16 @@
   entry/exit-only management and prespecified rebalance frequencies without
   changing the screening thresholds after inspecting the results. Preserve all
   attempted configurations and label comparisons on inspected history accordingly.
+- The user's live capital is USD 5,000 under W-8BEN as a mainland China tax
+  resident. Count U.S.-side tax only: no U.S. tax on stock or ETF price gains;
+  cash dividends net of the 10% treaty withholding (30% without the treaty
+  claim), confirmed against IBKR withholding records. Use the principal ladder
+  for new research and accounts: below principal stop new or larger stock
+  positions while keeping QQQ and existing stock exits; at or below half of
+  principal liquidate next session and terminate permanently. Gains above
+  principal carry no account-level drawdown lock. Keep the legacy peak-drawdown
+  rule unchanged for existing accounts and frozen studies. See
+  docs/research/principal-risk-and-tax.md.
 - Paper fills must follow the decision session. Preserve Decimal accounting,
   append-only history and restart idempotency. Keep synthetic and real data explicit.
 - Account snapshots are tied to engine source and parameters. After changing engine
